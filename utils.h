@@ -12,8 +12,8 @@
 #include <gatt.h>
 #include "gatttool.h"
 
-GIOChannel* gatt_connect(const char* src, const char* dst,
-                         const char* dst_type, const char* sec_level,
+GIOChannel* gatt_connect(bdaddr_t* src, bdaddr_t* dst,
+                         char dst_type, const char* sec_level,
                          int psm, int mtu, BtIOConnect connect_cb,
                          GError** gerr) {
     GIOChannel* chan;
@@ -25,23 +25,17 @@ GIOChannel* gatt_connect(const char* src, const char* dst,
     //from btio.h
     BtIOSecLevel sec;
 
-    //mac addr to array
-    str2ba(dst, &dba);
+    bacpy(&dst, &dba);
 
     /* Local adapter */
     if(src != NULL) {
-        if(!strncmp(src, "hci", 3)) {
-            hci_devba(atoi(src + 3), &sba);
-        } else {
-            str2ba(src, &sba);
-        }
+        bacpy(&src, &sba);
     } else {
         bacpy(&sba, BDADDR_ANY);
     }
 
-    //change to pass enum?
     /* Not used for BR/EDR */
-    if(strcmp(dst_type, "random") == 0) {
+    if(dst_type == BDADDR_LE_RANDOM) {
         dest_type = BDADDR_LE_RANDOM;
     } else {
         dest_type = BDADDR_LE_PUBLIC;
