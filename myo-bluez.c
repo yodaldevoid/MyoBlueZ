@@ -20,6 +20,12 @@ static GIOChannel *iochannel = NULL;
 static GAttrib *attrib = NULL;
 static GMainLoop *event_loop;
 
+static int callback = FALSE;
+static uint8_t readValue* = NULL;
+static ssize_t readValueSize = 0;
+
+static new;
+
 void myo_scan(int devId, bdaddr_t* addr) {
     int dd, err, len;
     
@@ -192,8 +198,33 @@ GIOChannel* myo_connect(int src, bdaddr_t* dst,
     return chan;
 }
 
-char read(int handle) {
+void freeReadValue() {
+    readValueSize = -1;
+    free(readValue);
+}
+
+static void char_read_cb(guint8 status, const guint8 *pdu, guint16 plen, gpointer user_data) {
+	if (status != 0) {
+		perror("Characteristic value/descriptor read failed: %s\n", att_ecode2str(status));
+		return;
+	}
+
+	readValueSize = dec_read_resp(pdu, plen, readValue, sizeof(readValue));
+	if (readValueSize < 0) {
+		perror("Protocol error\n");
+	}
+}
+
+void read(int handle) {
     gatt_read_char(attrib, handle, char_read_cb, attrib);
+    
+    while(!callback) {
+        //sleep
+    }
+}
+
+void write(int handle, unsigned char* data, int dataLen) {
+    gatt_write_cmd(attrib, handle, data, dataLen, NULL, NULL);
 }
 
 static void events_handler(const uint8_t *pdu, uint16_t len, gpointer user_data) {
@@ -285,6 +316,8 @@ int main(void) {
     bdaddr_t dst;
     int hciNum;
     
+    unsigned char writeValue[16];
+    
     hciNum = hci_get_route(NULL);
     //scan for Myo
     scan_myo(hciNum, &dst);
@@ -303,12 +336,67 @@ int main(void) {
         g_io_add_watch(iochannel, G_IO_HUP, channel_watcher, NULL);
         //read firmware version
         read(0x17)
-        //print firmware version
+        printf("firmware version: %d.%d.%d.%d\n", readValue[4], readValue[5], readValue[6], readValue[7]);
         
+        new = readValue[4];
+        freeReadArray();
         //if old do the thing
-        
         //else do the other thing (configure)
-        
+        if(!new) {
+            //don't know what these do; Myo Connect sends them, though we get data fine without them
+            writeValue[0] = 0x01;
+            writeValue[1] = 0x02;
+            writeValue[2] = 0x00;
+            writeValue[3] = 0x00;
+            write(0x19, writeValue, 4);
+            
+            writeValue[1] = 0x00;
+            write(0x2f, writeValue, 2);
+            write(0x2c, writeValue, 2);
+            write(0x32, writeValue, 2);
+            write(0x35, writeValue, 2);
+
+            //enable EMG data
+            write(0x28, writeValue, 2);
+            //enable IMU data
+            write(0x1d, writeValue, 2);
+
+            //Sampling rate of the underlying EMG sensor, capped to 1000. If it's less than 1000, emg_hz is correct. If it is greater, the actual framerate starts dropping inversely. Also, if this is much less than 1000, EMG data becomes slower to respond to changes. In conclusion, 1000 is probably a good value.
+            C = 1000
+            emg_hz = 50
+            //strength of low-pass filtering of EMG data
+            emg_smooth = 100
+
+            imu_hz = 50
+
+            //send sensor parameters, or we don't get any data
+            writeValue[0] = 2;
+            writeValue[1] = 9;
+            writeValue[2] = 2;
+            writeValue[3] = 1;
+            *((short*) &(writeValue + 4)) = C;
+            writeValue[6] = emg_smooth;
+            writeValue[7] = C/emg_hz;
+            writeValue[8] = imu_hz;
+            writeValue[9] = 0;
+            writeValue[10] = 0;
+            write(0x19, writeValue, 11);
+        } else {
+            read(0x03);
+            printf("device name: %s", readValue);
+            freeReadValue();
+
+            //enable IMU data
+            writeValue[0] = 0x01;
+            writeValue[1] = 0x00;
+            write(0x1d, writeValue, 2)
+            //enable on/off arm notifications
+            writeValue[0] = 0x02;
+            write(0x24, writeValue, 2)
+
+            //self.write_attr(0x19, b'\x01\x03\x00\x01\x01')
+            self.start_raw()
+        }
     } else {
         //error stuff
         //set_state(STATE_DISCONNECTED);
