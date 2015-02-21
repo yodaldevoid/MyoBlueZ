@@ -6,25 +6,18 @@
 #include <bluetooth/hci.h>
 #include <bluetooth/hci_lib.h>
 
-#include <lib/uuid.h>
-#include <btio/btio.h>
-#include <att.h>
-#include <gattrib.h>
-#include <gatt.h>
+#include <dbus/dbus.h>
 
 static const PAYLOAD_END[] = {0x06, 0x42, 0x48, 0x12, 0x4A, 0x7F,
                                 0x2C, 0x48, 0x47, 0xB9, 0xDE, 0x04,
                                 0xA9, 0x01, 0x00, 0x06, 0xD5};
 
-static GIOChannel *iochannel = NULL;
-static GAttrib *attrib = NULL;
-static GMainLoop *event_loop;
-
-static int callback = FALSE;
-static uint8_t readValue* = NULL;
-static ssize_t readValueSize = 0;
+DBusConnection* conn;
 
 static new;
+
+static char adapter[] = "/org/bluez/hci0";
+static char device[] = "/org/bluez/hci0/dev_00_00_00_00_00_00";
 
 void myo_scan(int devId, bdaddr_t* addr) {
     int dd, err, len;
@@ -129,73 +122,19 @@ void myo_scan(int devId, bdaddr_t* addr) {
     hci_close_dev(dd);
 }
 
-GIOChannel* myo_connect(int src, bdaddr_t* dst,
-                         char dst_type, BtIOSecLevel sec_level,
-                         int psm, int mtu, BtIOConnect connect_cb,
-                         GError** gerr) {
-    GIOChannel* chan;
-    //from bluetooth.h
-    bdaddr_t sba;
-    uint8_t dest_type;
-    //from glib.h
-    GError* tmp_err = NULL;
-    //from btio.h
-    BtIOSecLevel sec;
-
-    //bacpy(&dst, &dba);
-
-    /* Local adapter */
-    hci_devba(src, &sba);
-    //bacpy(&sba, BDADDR_ANY);
-
-    /* Not used for BR/EDR */
-    if(dst_type == BDADDR_LE_RANDOM) {
-        dest_type = BDADDR_LE_RANDOM;
-    } else {
-        dest_type = BDADDR_LE_PUBLIC;
+int myo_connect() {
+    DBusMessage* msg;
+    DBusError err;
+    
+    msg = dbus_message_new_method_call("org.bluez", device, "org.bluez.Device1", "Connect");
+    dbus_error_init(&error);
+    dbus_connection_send_with_reply_and_block(conn, msg, -1, &err);
+    if(dbus_error_is_set(&error)) {
+        //error stuff
+        dbus_error_free(&error);
+        return 1;
     }
-
-    //change to pass enum?
-    switch(sec_level) {
-        case: BT_IO_SEC_MEDIUM
-            sec = BT_IO_SEC_MEDIUM;
-            break;
-        case: BT_IO_SEC_HIGH
-            sec = BT_IO_SEC_HIGH;
-            break;
-        default:
-            sec = BT_IO_SEC_LOW;
-            break;
-    }
-
-    if(psm == 0) {
-        //from btio.h
-        //public adapter
-        chan = bt_io_connect(connect_cb, NULL, NULL, &tmp_err,
-                             BT_IO_OPT_SOURCE_BDADDR, &sba,
-                             BT_IO_OPT_SOURCE_TYPE, BDADDR_LE_PUBLIC,
-                             BT_IO_OPT_DEST_BDADDR, dst,
-                             BT_IO_OPT_DEST_TYPE, dest_type,
-                             BT_IO_OPT_CID, ATT_CID,
-                             BT_IO_OPT_SEC_LEVEL, sec,
-                             BT_IO_OPT_INVALID);
-    } else {
-        //random adapter
-        chan = bt_io_connect(connect_cb, NULL, NULL, &tmp_err,
-                             BT_IO_OPT_SOURCE_BDADDR, &sba,
-                             BT_IO_OPT_DEST_BDADDR, dst,
-                             BT_IO_OPT_PSM, psm,
-                             BT_IO_OPT_IMTU, mtu,
-                             BT_IO_OPT_SEC_LEVEL, sec,
-                             BT_IO_OPT_INVALID);
-    }
-
-    if(tmp_err) {
-        g_propagate_error(gerr, tmp_err);
-        return NULL;
-    }
-
-    return chan;
+    return 0;
 }
 
 void freeReadValue() {
@@ -312,25 +251,29 @@ static gboolean channel_watcher(GIOChannel *chan, GIOCondition cond, gpointer us
 }
 
 int main(void) {
-    GError* gerr = NULL;
     bdaddr_t dst;
-    int hciNum;
+    int adapterId, err;
     
     unsigned char writeValue[16];
     
-    hciNum = hci_get_route(NULL);
+    adapterId = hci_get_route(NULL);
+    sprintf(adapter, "/org/bluez/hci%d", adapterId);
     //scan for Myo
     scan_myo(hciNum, &dst);
     if(NULL == dst) {
         perror("Error finding Myo!");
         exit(1);
     }
+    
+    sprintf(device, "%s/dev_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X", adapter, dst->b[5], dst->b[4], dst->b[3], dst->b[2], dst->b[1], dst->b[0]);
+    
+    conn = dbus_bus_get(DBUS_BUS_SYSTEM, NULL);
+    
     //get channel with gatt_connect
     printf("Connecting...\n");
-    iochannel = myo_connect(hciNum, dst, BDADDR_LE_PUBLIC, BT_IO_SEC_LOW, 0, 0, connect_cb, &gerr);
+    err = myo_connect();
     
-    //if channel != NULL
-    if(NULL != iochannel) {
+    if(!err) {
         printf("Connected!\n");
         //set watcher for disconnect
         g_io_add_watch(iochannel, G_IO_HUP, channel_watcher, NULL);
@@ -397,10 +340,7 @@ int main(void) {
             //self.write_attr(0x19, b'\x01\x03\x00\x01\x01')
             self.start_raw()
         }
-    } else {
-        //error stuff
-        //set_state(STATE_DISCONNECTED);
-		error("%s\n", gerr->message);
-		g_error_free(gerr);
     }
+    
+    dbus_connection_close(conn)
 }
