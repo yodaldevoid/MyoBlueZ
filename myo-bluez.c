@@ -1,23 +1,56 @@
 #include <stdlib.h>
 #include <glib.h>
+#include <gio/gio.h>
 #include <string.h>
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/hci.h>
 #include <bluetooth/hci_lib.h>
 
-#include <dbus/dbus.h>
-
 static const PAYLOAD_END[] = {0x06, 0x42, 0x48, 0x12, 0x4A, 0x7F,
                                 0x2C, 0x48, 0x47, 0xB9, 0xDE, 0x04,
                                 0xA9, 0x01, 0x00, 0x06, 0xD5};
 
-DBusConnection* conn;
+static GError* gerr;
+static GCancellable* cancel;
 
-static new;
+static int new;
 
-static char adapter[] = "/org/bluez/hci0";
-static char device[] = "/org/bluez/hci0/dev_00_00_00_00_00_00";
+static GDBusObjectManagerClient* manager;
+static GDBusProxy* device;
+
+static int myo_found;
+
+void interface_added_cb(GDBusObjectManager* manager, GDBusObject* object, GDBusInterface* interface,
+                    gpointer user_data) {
+    GDBusInterfaceInfo* info;
+    bdaddr_t* addr;
+    GDBusProxy* proxy;
+    GVariant* addrVar;
+    char* addrStr;
+    bdaddr_t cmp;
+    
+    info = g_dbus_interface_get_info(interface);
+    if(strcmp(info->name, "org.bluez.Device1")) {
+        addr = (bdaddr_t*) user_data;
+        proxy = (GDBusProxy*) interface;
+        addrVar = g_dbus_proxy_get_cached_property(proxy, "Address");
+        if(addrVar != NULL) {
+            addrStr = g_variant_get_string(addrVar, NULL);
+            str2ba(addrStr, &cmp);
+            if(memcmp(addr, &cmp, sizeof(bdaddr_t)) == 0) {
+                myo_found = TRUE;
+            }
+        }
+        
+        g_variant_unref(addrVar);
+    }
+}
+
+void disconnect_cb(GDBusProxy* proxy, GVariant* changed_properties, GStrv invalidated_properties,
+                    gpointer user_data) {
+    
+}
 
 void myo_scan(int devId, bdaddr_t* addr) {
     int dd, err, len;
@@ -29,6 +62,10 @@ void myo_scan(int devId, bdaddr_t* addr) {
     
     evt_le_meta_event *meta;
 	le_advertising_info *info;
+    
+    char adapterPath[16];
+    GDBusProxy* adapter;
+    GVariant* reply;
     
     addr = NULL;
     
@@ -120,26 +157,27 @@ void myo_scan(int devId, bdaddr_t* addr) {
 	}
     
     hci_close_dev(dd);
-}
-
-int myo_connect() {
-    DBusMessage* msg;
-    DBusError err;
     
-    msg = dbus_message_new_method_call("org.bluez", device, "org.bluez.Device1", "Connect");
-    dbus_error_init(&error);
-    dbus_connection_send_with_reply_and_block(conn, msg, -1, &err);
-    if(dbus_error_is_set(&error)) {
-        //error stuff
-        dbus_error_free(&error);
-        return 1;
+    //now scan to populate devices
+    sprintf(adapterPath, "/org/bluez/hci%d", adapterID);
+    adapter = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+            "org.bluez", adapterPath, "org.bluez.Adapter1", cancel, &gerr);
+    //TODO: check for error and cancel
+    
+    g_signal_connect(manager, "interface-added", interface_added_cb, addr);
+    
+    reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, cancel, &gerr);
+    //TODO: check for error and cancel
+    g_variant_unref(reply);
+    
+    myo_found = FALSE;
+    while(!myo_found) {
+        reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, cancel, &gerr);
+        //TODO: check for error and cancel
+        g_variant_unref(reply);
     }
-    return 0;
-}
-
-void freeReadValue() {
-    readValueSize = -1;
-    free(readValue);
+    
+    g_object_unref(adapter);
 }
 
 static void char_read_cb(guint8 status, const guint8 *pdu, guint16 plen, gpointer user_data) {
@@ -166,85 +204,6 @@ void write(int handle, unsigned char* data, int dataLen) {
     gatt_write_cmd(attrib, handle, data, dataLen, NULL, NULL);
 }
 
-static void events_handler(const uint8_t *pdu, uint16_t len, gpointer user_data) {
-	uint8_t *opdu;
-	uint16_t handle, i, olen = 0;
-	size_t plen;
-
-	handle = get_le16(&pdu[1]);
-
-	switch (pdu[0]) {
-	case ATT_OP_HANDLE_NOTIFY:
-		g_print("Notification handle = 0x%04x value: ", handle);
-		break;
-	case ATT_OP_HANDLE_IND:
-		g_print("Indication   handle = 0x%04x value: ", handle);
-		break;
-	default:
-		g_print("Invalid opcode\n");
-		return;
-	}
-
-	for (i = 3; i < len; i++)
-		g_print("%02x ", pdu[i]);
-
-	g_print("\n");
-
-	if (pdu[0] == ATT_OP_HANDLE_NOTIFY)
-		return;
-
-	opdu = g_attrib_get_buffer(attrib, &plen);
-	olen = enc_confirmation(opdu, plen);
-
-	if (olen > 0)
-		g_attrib_send(attrib, 0, opdu, olen, NULL, NULL, NULL);
-}
-
-static void connect_cb(GIOChannel *io, GError *err, gpointer user_data) {
-	uint16_t mtu;
-	uint16_t cid;
-
-	if (err) {
-		set_state(STATE_DISCONNECTED);
-		error("%s\n", err->message);
-		return;
-	}
-
-	bt_io_get(io, &err, BT_IO_OPT_IMTU, &mtu, BT_IO_OPT_CID, &cid, BT_IO_OPT_INVALID);
-
-	if (err) {
-		g_printerr("Can't detect MTU, using default: %s", err->message);
-		g_error_free(err);
-		mtu = ATT_DEFAULT_LE_MTU;
-	}
-
-	if (cid == ATT_CID) {
-		mtu = ATT_DEFAULT_LE_MTU;
-    }
-
-	attrib = g_attrib_new(iochannel, mtu);
-    g_attrib_register(attrib, ATT_OP_HANDLE_NOTIFY, GATTRIB_ALL_HANDLES,
-						events_handler, attrib, NULL);
-	g_attrib_register(attrib, ATT_OP_HANDLE_IND, GATTRIB_ALL_HANDLES,
-						events_handler, attrib, NULL);
-    //do somthing to keep track of the state
-	//set_state(STATE_CONNECTED);
-}
-
-static void disconnect_io() {
-	if (conn_state == STATE_DISCONNECTED)
-		return;
-
-	g_attrib_unref(attrib);
-	attrib = NULL;
-
-	g_io_channel_shutdown(iochannel, FALSE, NULL);
-	g_io_channel_unref(iochannel);
-	iochannel = NULL;
-
-	set_state(STATE_DISCONNECTED);
-}
-
 static gboolean channel_watcher(GIOChannel *chan, GIOCondition cond, gpointer user_data) {
 	disconnect_io();
 	return FALSE;
@@ -252,95 +211,109 @@ static gboolean channel_watcher(GIOChannel *chan, GIOCondition cond, gpointer us
 
 int main(void) {
     bdaddr_t dst;
-    int adapterId, err;
+    int adapterId;
+    char devicePath[38];
+    GVariant* reply;
     
     unsigned char writeValue[16];
     
+    gerr = g_error_new();
+    cancel = g_cancellable_new();
+    
+    manager = (GDBusObjectManagerClient*) g_dbus_object_manager_client_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+            G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE, "org.bluez", "/", NULL, NULL, cancel, &gerr);
+    //TODO: check for error and cancel
+    
     adapterId = hci_get_route(NULL);
-    sprintf(adapter, "/org/bluez/hci%d", adapterId);
+    
     //scan for Myo
-    scan_myo(hciNum, &dst);
+    scan_myo(adapterId, &dst);
     if(NULL == dst) {
         perror("Error finding Myo!");
         exit(1);
     }
     
-    sprintf(device, "%s/dev_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X", adapter, dst->b[5], dst->b[4], dst->b[3], dst->b[2], dst->b[1], dst->b[0]);
+    sprintf(devicePath, "/org/bluez/hci%d/dev_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X", adapterPath, dst->b[5],
+            dst->b[4], dst->b[3], dst->b[2], dst->b[1], dst->b[0]);
     
-    conn = dbus_bus_get(DBUS_BUS_SYSTEM, NULL);
+    device = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+            "org.bluez", devicePath, "org.bluez.Device1", cancel, &gerr);
+    //TODO: check for error and cancel
     
-    //get channel with gatt_connect
     printf("Connecting...\n");
-    err = myo_connect();
+    reply = g_dbus_proxy_call_sync(device, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, cancel, &gerr);
+    //TODO: check for error and cancel
+    g_variant_unref(reply);
     
-    if(!err) {
-        printf("Connected!\n");
-        //set watcher for disconnect
-        g_io_add_watch(iochannel, G_IO_HUP, channel_watcher, NULL);
-        //read firmware version
-        read(0x17)
-        printf("firmware version: %d.%d.%d.%d\n", readValue[4], readValue[5], readValue[6], readValue[7]);
+    printf("Connected!\n");
+    //set watcher for disconnect
+    g_signal_connect(device, "interface-added", disconnect_cb, NULL);
+    
+    //read firmware version
+    read(0x17)
+    printf("firmware version: %d.%d.%d.%d\n", readValue[4], readValue[5], readValue[6], readValue[7]);
+    
+    new = readValue[4];
+    freeReadArray();
+    //if old do the thing
+    //else do the other thing (configure)
+    if(!new) {
+        //don't know what these do; Myo Connect sends them, though we get data fine without them
+        writeValue[0] = 0x01;
+        writeValue[1] = 0x02;
+        writeValue[2] = 0x00;
+        writeValue[3] = 0x00;
+        write(0x19, writeValue, 4);
         
-        new = readValue[4];
-        freeReadArray();
-        //if old do the thing
-        //else do the other thing (configure)
-        if(!new) {
-            //don't know what these do; Myo Connect sends them, though we get data fine without them
-            writeValue[0] = 0x01;
-            writeValue[1] = 0x02;
-            writeValue[2] = 0x00;
-            writeValue[3] = 0x00;
-            write(0x19, writeValue, 4);
-            
-            writeValue[1] = 0x00;
-            write(0x2f, writeValue, 2);
-            write(0x2c, writeValue, 2);
-            write(0x32, writeValue, 2);
-            write(0x35, writeValue, 2);
+        writeValue[1] = 0x00;
+        write(0x2f, writeValue, 2);
+        write(0x2c, writeValue, 2);
+        write(0x32, writeValue, 2);
+        write(0x35, writeValue, 2);
 
-            //enable EMG data
-            write(0x28, writeValue, 2);
-            //enable IMU data
-            write(0x1d, writeValue, 2);
+        //enable EMG data
+        write(0x28, writeValue, 2);
+        //enable IMU data
+        write(0x1d, writeValue, 2);
 
-            //Sampling rate of the underlying EMG sensor, capped to 1000. If it's less than 1000, emg_hz is correct. If it is greater, the actual framerate starts dropping inversely. Also, if this is much less than 1000, EMG data becomes slower to respond to changes. In conclusion, 1000 is probably a good value.
-            C = 1000
-            emg_hz = 50
-            //strength of low-pass filtering of EMG data
-            emg_smooth = 100
+        //Sampling rate of the underlying EMG sensor, capped to 1000. If it's less than 1000, emg_hz is correct. If it is greater, the actual framerate starts dropping inversely. Also, if this is much less than 1000, EMG data becomes slower to respond to changes. In conclusion, 1000 is probably a good value.
+        C = 1000
+        emg_hz = 50
+        //strength of low-pass filtering of EMG data
+        emg_smooth = 100
 
-            imu_hz = 50
+        imu_hz = 50
 
-            //send sensor parameters, or we don't get any data
-            writeValue[0] = 2;
-            writeValue[1] = 9;
-            writeValue[2] = 2;
-            writeValue[3] = 1;
-            *((short*) &(writeValue + 4)) = C;
-            writeValue[6] = emg_smooth;
-            writeValue[7] = C/emg_hz;
-            writeValue[8] = imu_hz;
-            writeValue[9] = 0;
-            writeValue[10] = 0;
-            write(0x19, writeValue, 11);
-        } else {
-            read(0x03);
-            printf("device name: %s", readValue);
-            freeReadValue();
+        //send sensor parameters, or we don't get any data
+        writeValue[0] = 2;
+        writeValue[1] = 9;
+        writeValue[2] = 2;
+        writeValue[3] = 1;
+        *((short*) &(writeValue + 4)) = C;
+        writeValue[6] = emg_smooth;
+        writeValue[7] = C/emg_hz;
+        writeValue[8] = imu_hz;
+        writeValue[9] = 0;
+        writeValue[10] = 0;
+        write(0x19, writeValue, 11);
+    } else {
+        read(0x03);
+        printf("device name: %s", readValue);
+        freeReadValue();
 
-            //enable IMU data
-            writeValue[0] = 0x01;
-            writeValue[1] = 0x00;
-            write(0x1d, writeValue, 2)
-            //enable on/off arm notifications
-            writeValue[0] = 0x02;
-            write(0x24, writeValue, 2)
+        //enable IMU data
+        writeValue[0] = 0x01;
+        writeValue[1] = 0x00;
+        write(0x1d, writeValue, 2)
+        //enable on/off arm notifications
+        writeValue[0] = 0x02;
+        write(0x24, writeValue, 2)
 
-            //self.write_attr(0x19, b'\x01\x03\x00\x01\x01')
-            self.start_raw()
-        }
+        //self.write_attr(0x19, b'\x01\x03\x00\x01\x01')
+        self.start_raw()
     }
     
-    dbus_connection_close(conn)
+    g_object_unref(device);
+    
+    //TODO: main loop stuff
 }
