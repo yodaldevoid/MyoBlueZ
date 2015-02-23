@@ -11,23 +11,21 @@ static const PAYLOAD_END[] = {0x06, 0x42, 0x48, 0x12, 0x4A, 0x7F,
                                 0x2C, 0x48, 0x47, 0xB9, 0xDE, 0x04,
                                 0xA9, 0x01, 0x00, 0x06, 0xD5};
 
-static GError* gerr;
-static GCancellable* cancel;
+static GError *error;
+static GMainLoop *loop;
 
 static int new;
 
-static GDBusObjectManagerClient* manager;
-static GDBusProxy* device;
+static GDBusProxy *adapter;
+static GDBusProxy *device;
 
-static int myo_found;
-
-void interface_added_cb(GDBusObjectManager* manager, GDBusObject* object, GDBusInterface* interface,
+void interface_added_cb(GDBusObjectManager *manager, GDBusObject *object, GDBusInterface *interface,
                     gpointer user_data) {
-    GDBusInterfaceInfo* info;
-    bdaddr_t* addr;
-    GDBusProxy* proxy;
-    GVariant* addrVar;
-    char* addrStr;
+    GDBusInterfaceInfo *info;
+    bdaddr_t *addr;
+    GDBusProxy *proxy;
+    GVariant *addrVar, *reply;
+    char *addrStr;
     bdaddr_t cmp;
     
     info = g_dbus_interface_get_info(interface);
@@ -39,7 +37,20 @@ void interface_added_cb(GDBusObjectManager* manager, GDBusObject* object, GDBusI
             addrStr = g_variant_get_string(addrVar, NULL);
             str2ba(addrStr, &cmp);
             if(memcmp(addr, &cmp, sizeof(bdaddr_t)) == 0) {
-                myo_found = TRUE;
+                reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                //TODO: check for error
+                g_variant_unref(reply);
+                
+                //get path from proxy
+                
+                device = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                        "org.bluez", g_dbus_proxy_get_object_path(proxy), "org.bluez.Device1", NULL, &error);
+                //TODO: check for error
+                
+                //set watcher for disconnect
+                g_signal_connect(device, "g-properties-changed", disconnect_cb, NULL);
+                
+                myo_connect();
             }
         }
         
@@ -47,12 +58,7 @@ void interface_added_cb(GDBusObjectManager* manager, GDBusObject* object, GDBusI
     }
 }
 
-void disconnect_cb(GDBusProxy* proxy, GVariant* changed_properties, GStrv invalidated_properties,
-                    gpointer user_data) {
-    
-}
-
-void myo_scan(int devId, bdaddr_t* addr) {
+void myo_scan(int adapter_id, bdaddr_t *addr) {
     int dd, err, len;
     
     unsigned char buf[HCI_MAX_EVENT_SIZE];
@@ -64,28 +70,27 @@ void myo_scan(int devId, bdaddr_t* addr) {
 	le_advertising_info *info;
     
     char adapterPath[16];
-    GDBusProxy* adapter;
-    GVariant* reply;
+    GVariant *reply;
     
     addr = NULL;
     
-    dd = hci_open_dev(dev_id);
+    dd = hci_open_dev(adapter_id);
     if (dd < 0) {
 		perror("Could not open device");
-		exit(1);
+		return;
 	}
     
     err = hci_le_set_scan_parameters(dd, 1, htobs(0x0010), htobs(0x0010),
 						LE_PUBLIC_ADDRESS, 0, 10000);
     if (err < 0) {
 		perror("Set scan parameters failed");
-		exit(1);
+		return;
 	}
     
     err = hci_le_set_scan_enable(dd, 1, 1, 10000);
     if (err < 0) {
 		perror("Enable scan failed");
-		exit(1);
+		return;
 	}
     
     printf("Scanning...\n");
@@ -94,7 +99,9 @@ void myo_scan(int devId, bdaddr_t* addr) {
     olen = sizeof(of);
 	if (getsockopt(dd, SOL_HCI, HCI_FILTER, &of, &olen) < 0) {
 		printf("Could not get socket options\n");
-		return -1;
+        
+        //TODO: turn off scanning
+		return;
 	}
     
     //make new filter
@@ -105,7 +112,9 @@ void myo_scan(int devId, bdaddr_t* addr) {
     //set new filter
     if (setsockopt(dd, SOL_HCI, HCI_FILTER, &nf, sizeof(nf)) < 0) {
 		printf("Could not set socket options\n");
-		return -1;
+        
+        //TODO: turn off scanning
+		return;
 	}
     
     done = FALSE;
@@ -138,6 +147,8 @@ void myo_scan(int devId, bdaddr_t* addr) {
                 continue;
             }
             
+            //TODO: Print data
+            
             //check
             if(memcmp(&(info->data) + (info->length - 18), PAYLOAD_END, 17) == 0) {
                 printf("Found a Myo!\n");
@@ -153,31 +164,56 @@ void myo_scan(int devId, bdaddr_t* addr) {
     err = hci_le_set_scan_enable(dd, 0, 1, 10000);
 	if (err < 0) {
 		perror("Disable scan failed");
-		exit(1);
 	}
     
     hci_close_dev(dd);
     
     //now scan to populate devices
-    sprintf(adapterPath, "/org/bluez/hci%d", adapterID);
+    sprintf(adapterPath, "/org/bluez/hci%d", adapter_id);
     adapter = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-            "org.bluez", adapterPath, "org.bluez.Adapter1", cancel, &gerr);
-    //TODO: check for error and cancel
+            "org.bluez", adapterPath, "org.bluez.Adapter1", NULL, &error);
+    //TODO: check for error
     
     g_signal_connect(manager, "interface-added", interface_added_cb, addr);
     
-    reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, cancel, &gerr);
-    //TODO: check for error and cancel
+    reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    //TODO: check for error
+    g_variant_unref(reply);
+}
+
+void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+                    gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key;
+    GVariant *value;
+    
+    //check if peroperty was "connected"
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed_properties, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            if(strcmp(key, "Connected") == 0) {
+                if(!g_variant_get_boolean(value)) {
+                    //disconnected
+                    //TODO: check for success
+                    myo_connect();
+                }
+            }
+        }
+        g_variant_iter_free (iter);
+    }
+}
+
+void myo_connect() {
+    GVariant *reply;
+    
+    printf("Connecting...\n");
+    reply = g_dbus_proxy_call_sync(device, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    //TODO: check for error
     g_variant_unref(reply);
     
-    myo_found = FALSE;
-    while(!myo_found) {
-        reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, cancel, &gerr);
-        //TODO: check for error and cancel
-        g_variant_unref(reply);
-    }
+    printf("Connected!\n");
     
-    g_object_unref(adapter);
+    myo_initialize();
 }
 
 static void char_read_cb(guint8 status, const guint8 *pdu, guint16 plen, gpointer user_data) {
@@ -193,61 +229,15 @@ static void char_read_cb(guint8 status, const guint8 *pdu, guint16 plen, gpointe
 }
 
 void read(int handle) {
-    gatt_read_char(attrib, handle, char_read_cb, attrib);
     
-    while(!callback) {
-        //sleep
-    }
 }
 
-void write(int handle, unsigned char* data, int dataLen) {
-    gatt_write_cmd(attrib, handle, data, dataLen, NULL, NULL);
-}
-
-static gboolean channel_watcher(GIOChannel *chan, GIOCondition cond, gpointer user_data) {
-	disconnect_io();
-	return FALSE;
-}
-
-int main(void) {
-    bdaddr_t dst;
-    int adapterId;
-    char devicePath[38];
-    GVariant* reply;
+void write(int handle, unsigned char *data, int dataLen) {
     
+}
+
+void myo_initialize() {
     unsigned char writeValue[16];
-    
-    gerr = g_error_new();
-    cancel = g_cancellable_new();
-    
-    manager = (GDBusObjectManagerClient*) g_dbus_object_manager_client_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-            G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE, "org.bluez", "/", NULL, NULL, cancel, &gerr);
-    //TODO: check for error and cancel
-    
-    adapterId = hci_get_route(NULL);
-    
-    //scan for Myo
-    scan_myo(adapterId, &dst);
-    if(NULL == dst) {
-        perror("Error finding Myo!");
-        exit(1);
-    }
-    
-    sprintf(devicePath, "/org/bluez/hci%d/dev_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X_%2.2X", adapterPath, dst->b[5],
-            dst->b[4], dst->b[3], dst->b[2], dst->b[1], dst->b[0]);
-    
-    device = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-            "org.bluez", devicePath, "org.bluez.Device1", cancel, &gerr);
-    //TODO: check for error and cancel
-    
-    printf("Connecting...\n");
-    reply = g_dbus_proxy_call_sync(device, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, cancel, &gerr);
-    //TODO: check for error and cancel
-    g_variant_unref(reply);
-    
-    printf("Connected!\n");
-    //set watcher for disconnect
-    g_signal_connect(device, "interface-added", disconnect_cb, NULL);
     
     //read firmware version
     read(0x17)
@@ -310,10 +300,41 @@ int main(void) {
         write(0x24, writeValue, 2)
 
         //self.write_attr(0x19, b'\x01\x03\x00\x01\x01')
-        self.start_raw()
+        start_raw()
+    }
+}
+
+int main(void) {
+    bdaddr_t dst;
+    int adapter_id;
+    
+    GDBusObjectManagerClient *manager;
+    GVariant *reply;
+    
+    error = g_error_new();
+    loop = g_main_loop_new(NULL, FALSE);
+    
+    manager = (GDBusObjectManagerClient*) g_dbus_object_manager_client_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+            G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE, "org.bluez", "/", NULL, NULL, NULL, &error);
+    //TODO: check for error
+    
+    adapter_id = hci_get_route(NULL);
+    
+    //scan for Myo
+    scan_myo(adapter_id, &dst);
+    if(NULL == dst) {
+        perror("Error finding Myo!");
+        if(NULL != adapter) {
+            g_object_unref(adapter);
+        }
+        g_object_unref(manager);
+        return 1;
     }
     
-    g_object_unref(device);
+    g_main_loop_run(loop);
     
-    //TODO: main loop stuff
+    g_object_unref(adapter);
+    g_object_unref(device);
+    g_main_loop_unref(loop);
+    return 0;
 }
