@@ -1,25 +1,22 @@
 #include <stdlib.h>
-#include <glib.h>
-#include <gio/gio.h>
 #include <string.h>
 #include <errno.h>
+
+#include <glib.h>
+#include <gio/gio.h>
 
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/hci.h>
 #include <bluetooth/hci_lib.h>
-
-static const unsigned char PAYLOAD_END[] = {0x06, 0x42, 0x48, 0x12, 0x4A, 0x7F,
-                                0x2C, 0x48, 0x47, 0xB9, 0xDE, 0x04,
-                                0xA9, 0x01, 0x00, 0x06, 0xD5};
 
 static GError *error;
 static GMainLoop *loop;
 
 static int new;
 
-static GDBusObjectManagerClient *_manager;
+static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
-static GDBusProxy *device;
+static GDBusProxy *myo;
 
 void myo_connect();
 void myo_initialize();
@@ -49,149 +46,49 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
 void interface_added_cb(GDBusObjectManager *manager, GDBusObject *object, GDBusInterface *interface,
                     gpointer user_data) {
     GDBusInterfaceInfo *info;
-    bdaddr_t *addr;
     GDBusProxy *proxy;
-    GVariant *addrVar, *reply;
-    const gchar *addrStr;
-    bdaddr_t cmp;
+    GVariant *UUIDs_var, *reply;
+    GVariantIter *iter;
+    const gchar *uuid;
     
     info = g_dbus_interface_get_info(interface);
     if(strcmp(info->name, "org.bluez.Device1")) {
-        addr = (bdaddr_t*) user_data;
         proxy = (GDBusProxy*) interface;
-        addrVar = g_dbus_proxy_get_cached_property(proxy, "Address");
-        if(addrVar != NULL) {
-            addrStr = g_variant_get_string(addrVar, NULL);
-            str2ba(addrStr, &cmp);
-            if(memcmp(addr, &cmp, sizeof(bdaddr_t)) == 0) {
-                reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-                //TODO: check for error
-                g_variant_unref(reply);
-                
-                //get path from proxy
-                
-                device = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-                        "org.bluez", g_dbus_proxy_get_object_path(proxy), "org.bluez.Device1", NULL, &error);
-                //TODO: check for error
-                
-                //set watcher for disconnect
-                g_signal_connect(device, "g-properties-changed", G_CALLBACK(disconnect_cb), NULL);
-                
-                myo_connect();
+        UUIDs_var = g_dbus_proxy_get_cached_property(proxy, "UUIDs");
+        if(UUIDs_var != NULL) {
+            g_variant_get(UUIDs_var, "as", &iter);
+            while(g_variant_iter_loop(iter, "s", &uuid)) {
+                if(strcmp(uuid, "d5060001-a904-deb9-4748-2c7f4a124842") == 0) {
+                    reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                    //TODO: check for error
+                    g_variant_unref(reply);
+                    
+                    //get path from proxy
+                    myo = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_proxy_get_object_path(proxy), "org.bluez.Device1", NULL, &error);
+                    //TODO: check for error
+                    
+                    //set watcher for disconnect
+                    g_signal_connect(myo, "g-properties-changed", G_CALLBACK(disconnect_cb), NULL);
+                    
+                    myo_connect();
+                }
             }
+            
+            g_variant_iter_free (iter);
+        } else {
+            //error
         }
         
         g_variant_unref(addrVar);
+    } else if(strcmp(info->name, "org.bluez.GattService1")) {
+        
     }
 }
 
-int myo_scan(int adapter_id, bdaddr_t *addr) {
-    int dd, err, len;
-    
-    unsigned char buf[HCI_MAX_EVENT_SIZE];
-    struct hci_filter nf, of;
-    socklen_t olen;
-    unsigned char done;
-    
-    evt_le_meta_event *meta;
-	le_advertising_info *info;
-    
+int myo_scan(int adapter_id) {
     char adapterPath[16];
     GVariant *reply;
-    
-    dd = hci_open_dev(adapter_id);
-    if (dd < 0) {
-		perror("Could not open device");
-		return -1;
-	}
-    
-    err = hci_le_set_scan_parameters(dd, 1, htobs(0x0010), htobs(0x0010),
-						LE_PUBLIC_ADDRESS, 0, 10000);
-    if (err < 0) {
-		perror("Set scan parameters failed");
-		return -1;
-	}
-    
-    err = hci_le_set_scan_enable(dd, 1, 1, 10000);
-    if (err < 0) {
-		perror("Enable scan failed");
-		return -1;
-	}
-    
-    printf("Scanning...\n");
-    
-    //save old filter
-    olen = sizeof(of);
-	if (getsockopt(dd, SOL_HCI, HCI_FILTER, &of, &olen) < 0) {
-		printf("Could not get socket options\n");
-        
-        //TODO: turn off scanning
-		return -1;
-	}
-    
-    //make new filter
-    hci_filter_clear(&nf);
-	hci_filter_set_ptype(HCI_EVENT_PKT, &nf);
-	hci_filter_set_event(EVT_LE_META_EVENT, &nf);
-    
-    //set new filter
-    if (setsockopt(dd, SOL_HCI, HCI_FILTER, &nf, sizeof(nf)) < 0) {
-		printf("Could not set socket options\n");
-        
-        //TODO: turn off scanning
-		return -1;
-	}
-    
-    done = FALSE;
-    err = FALSE;
-    len = 0;
-    while(!done && !err) {
-        while ((len = read(dd, buf, sizeof(buf))) < 0) {
-            if (errno == EINTR) {
-                done = TRUE;
-                break;
-            }
-
-            if(errno == EAGAIN || errno == EINTR) {
-                continue;
-            }
-            
-            err = TRUE;
-        }
-        
-        if(!done && !err) {
-            meta = (void *) (buf + (1 + HCI_EVENT_HDR_SIZE));
-            len -= (1 + HCI_EVENT_HDR_SIZE);
-
-            if (meta->subevent != EVT_LE_ADVERTISING_REPORT) {
-                continue;
-            }
-
-            info = (le_advertising_info*) (meta->data + 1);
-            if(info->length == 0) {
-                continue;
-            }
-            
-            //TODO: Print data
-            
-            //check
-            if(memcmp(&(info->data) + (info->length - 18), PAYLOAD_END, 17) == 0) {
-                printf("Found a Myo!\n");
-                memcpy(addr, &info->bdaddr, sizeof(info->bdaddr));
-            }
-        }
-    }
-    
-    //set old filter
-    setsockopt(dd, SOL_HCI, HCI_FILTER, &of, sizeof(of));
-    
-    //disable with enable
-    err = hci_le_set_scan_enable(dd, 0, 1, 10000);
-	if (err < 0) {
-		perror("Disable scan failed");
-	}
-    
-    hci_close_dev(dd);
     
     //now scan to populate devices
     sprintf(adapterPath, "/org/bluez/hci%d", adapter_id);
@@ -199,7 +96,7 @@ int myo_scan(int adapter_id, bdaddr_t *addr) {
             "org.bluez", adapterPath, "org.bluez.Adapter1", NULL, &error);
     //TODO: check for error
     
-    g_signal_connect(_manager, "interface-added", G_CALLBACK(interface_added_cb), addr);
+    g_signal_connect(bluez_manager, "interface-added", G_CALLBACK(interface_added_cb), NULL);
     
     reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     //TODO: check for error
@@ -212,7 +109,7 @@ void myo_connect() {
     GVariant *reply;
     
     printf("Connecting...\n");
-    reply = g_dbus_proxy_call_sync(device, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    reply = g_dbus_proxy_call_sync(myo, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     //TODO: check for error
     g_variant_unref(reply);
     
@@ -299,20 +196,19 @@ void myo_initialize() {
 }
 
 int main(void) {
-    bdaddr_t dst;
     int adapter_id;
     
     error = NULL;
     loop = g_main_loop_new(NULL, FALSE);
     
-    _manager = (GDBusObjectManagerClient*) g_dbus_object_manager_client_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+    adapter_id = hci_get_route(NULL);
+    
+    bluez_manager = (GDBusObjectManagerClient*) g_dbus_object_manager_client_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
             G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE, "org.bluez", "/", NULL, NULL, NULL, NULL, &error);
     //TODO: check for error
     
-    adapter_id = hci_get_route(NULL);
-    
     //scan for Myo
-    if(!myo_scan(adapter_id, &dst)) {
+    if(!myo_scan(adapter_id)) {
         perror("Error finding Myo!");
         if(NULL != adapter) {
             g_object_unref(adapter);
@@ -323,8 +219,9 @@ int main(void) {
     
     g_main_loop_run(loop);
     
+    g_object_unref(bluez_manager);
     g_object_unref(adapter);
-    g_object_unref(device);
+    g_object_unref(myo);
     g_main_loop_unref(loop);
     return 0;
 }
