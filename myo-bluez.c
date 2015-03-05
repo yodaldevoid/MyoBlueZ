@@ -6,16 +6,14 @@
 #include <gio/gio.h>
 
 #include <bluetooth/bluetooth.h>
-#include <bluetooth/hci.h>
-#include <bluetooth/hci_lib.h>
 
 #define ASSERT(GERR, MSG) \
     if(GERR != NULL) { \
         g_assert(GERR); \
-        fprintf (stderr, "%s: %s\n",MSG ,err->message); \
-        g_error_free(err); \
+        fprintf (stderr, "%s: %s\n",MSG ,GERR->message); \
+        g_error_free(GERR); \
     }
-
+    
 static GError *error;
 static GMainLoop *loop;
 
@@ -42,6 +40,7 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                 if(!g_variant_get_boolean(value)) {
                     //disconnected
                     //TODO: check for success
+                    printf("Myo disconnected\n");
                     myo_connect();
                 }
             }
@@ -52,69 +51,139 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
 
 void interface_added_cb(GDBusObjectManager *manager, GDBusObject *object, GDBusInterface *interface,
                     gpointer user_data) {
-    GDBusInterfaceInfo *info;
     GDBusProxy *proxy;
-    GVariant *UUIDs_var, *reply;
+    GVariant *reply;
+    
+    if(is_myo(object, NULL)) {
+            proxy = (GDBusProxy*) interface;
+            
+            reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery",
+                        NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+            ASSERT(error, "StopDiscovery failed");
+            g_variant_unref(reply);
+            
+            printf("Myo found!\n");
+            
+            //get path from proxy
+            myo = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                        G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+                        g_dbus_proxy_get_object_path(proxy),
+                        "org.bluez.Device1", NULL, &error);
+            ASSERT(error, "Get Myo Proxy failed");
+            
+            //set watcher for disconnect
+            g_signal_connect(myo, "g-properties-changed",
+                G_CALLBACK(disconnect_cb), NULL);
+            
+            myo_connect();
+    }
+    
+    //TODO: GattService registration
+}
+
+gint is_adapter(gconstpointer a, gconstpointer b) {
+    GDBusInterface *interface;
+    
+    interface = g_dbus_object_get_interface((GDBusObject*) a, "org.bluez.Adapter1");
+    if(NULL == interface) {
+        return 1;
+    } else {
+        g_object_unref(interface);
+        return 0;
+    }
+}
+
+gint is_myo(gconstpointer a, gconstpointer b) {
+    GDBusProxy *proxy;
+    GVariant *UUIDs_var;
     GVariantIter *iter;
     const gchar *uuid;
     
-    info = g_dbus_interface_get_info(interface);
-    if(strcmp(info->name, "org.bluez.Device1")) {
-        proxy = (GDBusProxy*) interface;
+    gint ret;
+    
+    ret = 1;
+    
+    proxy = (GDBusProxy*) g_dbus_object_get_interface((GDBusObject*) a, "org.bluez.Device1");
+    if(proxy != NULL) {
         UUIDs_var = g_dbus_proxy_get_cached_property(proxy, "UUIDs");
         if(UUIDs_var != NULL) {
             g_variant_get(UUIDs_var, "as", &iter);
             while(g_variant_iter_loop(iter, "s", &uuid)) {
                 if(strcmp(uuid, "d5060001-a904-deb9-4748-2c7f4a124842") == 0) {
-                    reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery",
-                                NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-                    ASSERT(error, "StopDiscovery failed");
-                    g_variant_unref(reply);
-                    
-                    //get path from proxy
-                    myo = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
-                                g_dbus_proxy_get_object_path(proxy),
-                                "org.bluez.Device1", NULL, &error);
-                    ASSERT(error, "Get Myo Proxy failed");
-                    
-                    //set watcher for disconnect
-                    g_signal_connect(myo, "g-properties-changed",
-                        G_CALLBACK(disconnect_cb), NULL);
-                    
-                    myo_connect();
+                    ret = 0;
+                    break;
                 }
             }
             
             g_variant_iter_free (iter);
-        } else {
-            //error
         }
         
-        g_variant_unref(addrVar);
-    } else if(strcmp(info->name, "org.bluez.GattService1")) {
-        //TODO: GattService registration
+        g_variant_unref(UUIDs_var);
+        g_object_unref(proxy);
     }
+    
+    return ret;
 }
 
-int myo_scan(int adapter_id) {
-    char adapterPath[16];
+int myo_scan() {
     GVariant *reply;
+    GList *objects;
+    GList *object;
     
-    //now scan to populate devices
-    sprintf(adapterPath, "/org/bluez/hci%d", adapter_id);
+    //get adapter
+    objects = g_dbus_object_manager_get_objects((GDBusObjectManager*) bluez_manager);
+    if(NULL == objects) {
+        //failed
+        fprintf (stderr, "Manger did not give us objects!\n");
+        return 1;
+    }
+    object = g_list_find_custom(objects, NULL, is_adapter);
+    if(NULL == object) {
+        //failed
+        fprintf (stderr, "Adapter not in objects!\n");
+        return 1;
+    }
+    
     adapter = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", adapterPath,
+                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+                    g_dbus_object_get_object_path((GDBusObject*) object->data),
                     "org.bluez.Adapter1", NULL, &error);
     ASSERT(error, "Get Proxy for Adapter failed");
     
-    g_signal_connect(bluez_manager, "interface-added",
-        G_CALLBACK(interface_added_cb), NULL);
+    //check to make sure Myo has not already been found
+    object = g_list_find_custom(objects, NULL, is_myo);
+    if(NULL != object) {
+        //Myo has been found so we don't have to scan for it
+        //TODO: might be a problem if there are multiple Myos and this one cannot be connected to
+        printf("Myo found!\n");
+        
+        //get path from proxy
+        myo = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+                    g_dbus_object_get_object_path((GDBusObject*) object->data),
+                    "org.bluez.Device1", NULL, &error);
+        ASSERT(error, "Get Myo Proxy failed");
+        
+        //set watcher for disconnect
+        g_signal_connect(myo, "g-properties-changed",
+            G_CALLBACK(disconnect_cb), NULL);
+        
+        //TODO: maybe move to callback somewhere?
+        myo_connect();
+    } else {
+        //scan to find Myo devices
+        g_signal_connect(bluez_manager, "interface-added",
+            G_CALLBACK(interface_added_cb), NULL);
+        
+        printf("Discovery started\n");
+        
+        reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL,
+            G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+        ASSERT(error, "StartDiscovery failed");
+        g_variant_unref(reply);
+    }
     
-    reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL,
-        G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-    ASSERT(error, "StartDiscovery failed");
-    g_variant_unref(reply);
+    g_list_free_full(objects, g_object_unref);
     
     return 0;
 }
@@ -147,11 +216,13 @@ void myo_initialize() {
     unsigned short C;
     unsigned char emg_hz, emg_smooth, imu_hz;
     
+    printf("Initializing...\n");
+    
     //read firmware version
     read_char(0x17);
-    printf("firmware version: %d.%d.%d.%d\n", readValue[4], readValue[5], readValue[6], readValue[7]);
+    //printf("firmware version: %d.%d.%d.%d\n", readValue[4], readValue[5], readValue[6], readValue[7]);
     
-    new = readValue[4];
+    //new = readValue[4];
     //if old do the thing
     //else do the other thing (configure)
     if(!new) {
@@ -195,7 +266,7 @@ void myo_initialize() {
         write_char(0x19, writeValue, 11);
     } else {
         read_char(0x03);
-        printf("device name: %s", readValue);
+        //printf("device name: %s", readValue);
 
         //enable IMU data
         writeValue[0] = 0x01;
@@ -208,15 +279,13 @@ void myo_initialize() {
         //write_char(0x19, b'\x01\x03\x00\x01\x01'); //normal
         //start_raw();
     }
+    
+    printf("Initialized!");
 }
 
 int main(void) {
-    int adapter_id;
-    
     error = NULL;
     loop = g_main_loop_new(NULL, FALSE);
-    
-    adapter_id = hci_get_route(NULL);
     
     bluez_manager =
         (GDBusObjectManagerClient*) g_dbus_object_manager_client_new_for_bus_sync(
@@ -225,12 +294,12 @@ int main(void) {
     ASSERT(error, "Get ObjectManager failed");
     
     //scan for Myo
-    if(!myo_scan(adapter_id)) {
-        perror("Error finding Myo!");
+    if(myo_scan()) {
+        perror("Error finding Myo!\n");
         if(NULL != adapter) {
             g_object_unref(adapter);
         }
-        g_object_unref(_manager);
+        g_object_unref(bluez_manager);
         return 1;
     }
     
