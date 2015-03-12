@@ -350,18 +350,61 @@ void myo_get_version(char *ver_arr) {
 }
 
 void myo_EMG_notify_enable(bool enable){
+    GVariant *chars;
+    const char **char_paths;
+    GDBusProxy _char;
+    
     //get emg data characteristic from service
+    chars = g_dbus_proxy_get_cached_property(emg_service, "Characteristics");
+    char_paths = g_variant_get_objv(chars, NULL);
+    if(char_paths[0] == NULL) {
+        //error
+    }
+    _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
+                "org.bluez.GattCharacteristic1", NULL, &error);
     //call start notify or stop notify
+    g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 }
 
 void myo_IMU_notify_enable(bool enable){
+    GVariant *chars;
+    const char **char_paths;
+    GDBusProxy _char;
+    
     //get IMU data characteristic from service
+    chars = g_dbus_proxy_get_cached_property(emg_service, "Characteristics");
+    char_paths = g_variant_get_objv(chars, NULL);
+    //TODO: check UUID because the IMU service has two chars
+    if(char_paths[0] == NULL) {
+        //error
+    }
+    _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
+                "org.bluez.GattCharacteristic1", NULL, &error);
     //call start notify or stop notify
+    g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 }
 
 void myo_arm_indicate_enable(bool enable) {
+    GVariant *chars;
+    const char **char_paths;
+    GDBusProxy _char;
+    
     //get arm data characteristic from service
+    chars = g_dbus_proxy_get_cached_property(emg_service, "Characteristics");
+    char_paths = g_variant_get_objv(chars, NULL);
+    if(char_paths[0] == NULL) {
+        //error
+    }
+    _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
+                "org.bluez.GattCharacteristic1", NULL, &error);
     //call start notify or stop notify
+    g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 }
 
 void myo_update_enable(bool emg, bool imu, bool arm) {
