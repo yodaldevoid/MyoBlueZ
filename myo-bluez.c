@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stdbool.h>
 
 #include <glib.h>
 #include <gio/gio.h>
@@ -13,6 +14,13 @@
         fprintf (stderr, "%s: %s\n",MSG ,GERR->message); \
         g_error_free(GERR); \
     }
+    
+#define GAP_UUID "00001800-0000-1000-8000-00805f9b34fb"
+#define BATT_UUID "0000180f-0000-1000-8000-00805f9b34fb"
+#define MYO_UUID "d5060001-a904-deb9-4748-2c7f4a124842"
+#define IMU_UUID "d5060002-a904-deb9-4748-2c7f4a124842"
+#define ARM_UUID "d5060003-a904-deb9-4748-2c7f4a124842"
+#define EMG_UUID "d5060004-a904-deb9-4748-2c7f4a124842"
 
 enum MyoStatus {
     DISCONNECTED,
@@ -29,6 +37,15 @@ static gulong service_conn_id;
 static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
 static GDBusProxy *myo;
+
+static GDBusObjectManagerClient *gatt_manager;
+//TODO: maybe make structs for services and characteristics
+static GDBusProxy *generic_access_service;
+static GDBusProxy *battery_service;
+static GDBusProxy *myo_control_service;
+static GDBusProxy *IMU_service;
+static GDBusProxy *arm_service;
+static GDBusProxy *emg_service;
 
 int myo_connect();
 void myo_initialize();
@@ -61,7 +78,7 @@ gint is_myo(gconstpointer a, gconstpointer b) {
         if(UUIDs_var != NULL) {
             g_variant_get(UUIDs_var, "as", &iter);
             while(g_variant_iter_loop(iter, "s", &uuid)) {
-                if(strcmp(uuid, "d5060001-a904-deb9-4748-2c7f4a124842") == 0) {
+                if(strcmp(uuid, MYO_UUID) == 0) {
                     ret = 0;
                     break;
                 }
@@ -89,6 +106,59 @@ gint is_service(gconstpointer a, gconstpointer b) {
     }
 }
 
+void set_service(GDBusObject *object) {
+    GVariant *UUID;
+    const char *UUID_str;
+    
+    //check UUIDs for which service
+    //get UUID
+    UUID = g_dbus_proxy_get_cached_property((GDBusProxy*) object, "UUID");
+    if(UUID == NULL) {
+        return;
+    }
+    UUID_str = g_variant_get_string(UUID);
+    
+    if(strcmp(UUID_str, GAP_UUID) == 0) {
+        generic_access_service = g_dbus_proxy_new_for_bus_sync(
+                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_object_get_object_path(object),
+                            "org.bluez.GATTService1", NULL, &error);
+        ASSERT(error, "Get generic_access_service failed");
+    } else if(strcmp(UUID_str, BATT_UUID)) {
+        battery_service = g_dbus_proxy_new_for_bus_sync(
+                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_object_get_object_path(object),
+                            "org.bluez.GATTService1", NULL, &error);
+        ASSERT(error, "Get generic_access_service failed");
+    } else if(strcmp(UUID_str, MYO_UUID)) {
+        myo_control_service = g_dbus_proxy_new_for_bus_sync(
+                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_object_get_object_path(object),
+                            "org.bluez.GATTService1", NULL, &error);
+        ASSERT(error, "Get generic_access_service failed");
+    } else if(strcmp(UUID_str, IMU_UUID)) {
+        IMU_service = g_dbus_proxy_new_for_bus_sync(
+                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_object_get_object_path(object),
+                            "org.bluez.GATTService1", NULL, &error);
+        ASSERT(error, "Get generic_access_service failed");
+    } else if(strcmp(UUID_str, ARM_UUID)) {
+        arm_service = g_dbus_proxy_new_for_bus_sync(
+                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_object_get_object_path(object),
+                            "org.bluez.GATTService1", NULL, &error);
+        ASSERT(error, "Get generic_access_service failed");
+    } else if(strcmp(UUID_str, EMG_UUID)) {
+        emg_service = g_dbus_proxy_new_for_bus_sync(
+                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_object_get_object_path(object),
+                            "org.bluez.GATTService1", NULL, &error);
+        ASSERT(error, "Get generic_access_service failed");
+    }
+    
+    g_variant_unref(UUID);
+}
+
 void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                     gpointer user_data) {
     GVariantIter *iter;
@@ -112,6 +182,10 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
+void myo_data_cb() {
+    //TODO:
+}
+
 void interface_added_myo(GDBusObjectManager *manager, GDBusObject *object,
                             GDBusInterface *interface, gpointer user_data) {
     GVariant *reply;
@@ -131,7 +205,7 @@ void interface_added_myo(GDBusObjectManager *manager, GDBusObject *object,
 void interface_added_service(GDBusObjectManager *manager, GDBusObject *object,
                             GDBusInterface *interface, gpointer user_data) {
     if(is_service(object, NULL)) {
-        //TODO: GattService registration
+        set_service(object);
     }
 }
 
@@ -207,14 +281,18 @@ int myo_scan() {
 }
 
 int myo_connect(GDBusObject *object) {
+    GList *objects;
+    GList *object;
+    
     GVariant *reply;
     
     printf("Myo found!\n");
             
     //get path from proxy
-    myo = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE,
-                    NULL, "org.bluez", g_dbus_object_get_object_path(object),
-                    "org.bluez.Device1", NULL, &error);
+    myo = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+                                    g_dbus_object_get_object_path(object),
+                                    "org.bluez.Device1", NULL, &error);
     ASSERT(error, "Get Myo Proxy failed");
     if(myo == NULL) {
         return 1;
@@ -233,25 +311,66 @@ int myo_connect(GDBusObject *object) {
     status = CONNECTED;
     printf("Connected!\n");
     
-    //TODO: add scan for services
+    //search for
+    g_signal_connect(bluez_manager, "interface-added",
+                                        G_CALLBACK(is_interface_service), NULL);
     
-    //TODO: search for services
+    //search for services that are already registered
+    objects = g_dbus_object_manager_get_objects((GDBusObjectManager*) bluez_manager);
+    if(NULL == objects) {
+        //failed
+        fprintf (stderr, "Manger did not give us objects!\n");
+        return 1;
+    }
+    
+    do {
+        object = g_list_find_custom(objects, NULL, is_service);
+        if(object == NULL) {
+            break;
+        }
+        set_service(object->data);
+        objects = g_list_delete_link(objects, object);
+    } while(object != NULL);
+    
+    g_list_free_full(objects, g_object_unref);
     
     myo_initialize();
     
     return 0;
 }
 
-void read_char(int handle) {
-    
+int myo_get_name(char *str) {
+    //get name of myo from generic access and return length
+    //TODO:
 }
 
-void write_char(int handle, unsigned char *data, int dataLen) {
-    
+void myo_get_version(char *ver_arr) {
+    //get version from myo control service
+    //TODO:
+}
+
+void myo_EMG_notify_enable(bool enable){
+    //get emg data characteristic from service
+    //call start notify or stop notify
+}
+
+void myo_IMU_notify_enable(bool enable){
+    //get IMU data characteristic from service
+    //call start notify or stop notify
+}
+
+void myo_arm_indicate_enable(bool enable) {
+    //get arm data characteristic from service
+    //call start notify or stop notify
+}
+
+void myo_update_enable(bool emg, bool imu, bool arm) {
+    //TODO:
 }
 
 void myo_initialize() {
-    unsigned char writeValue[16];
+    unsigned char version[4];
+    char name[25];
     
     unsigned short C;
     unsigned char emg_hz, emg_smooth, imu_hz;
@@ -259,65 +378,62 @@ void myo_initialize() {
     printf("Initializing...\n");
     
     //read firmware version
-    read_char(0x17);
-    //printf("firmware version: %d.%d.%d.%d\n", readValue[4], readValue[5], readValue[6], readValue[7]);
+    myo_get_version(version);
+    printf("firmware version: %d.%d.%d.%d\n", version[0], version[1],
+                                                        version[2], version[3]);
     
-    //new = readValue[4];
+    new = version[0];
     //if old do the thing
     //else do the other thing (configure)
     if(!new) {
         //don't know what these do; Myo Connect sends them, though we get data fine without them
-        writeValue[0] = 0x01;
-        writeValue[1] = 0x02;
-        writeValue[2] = 0x00;
-        writeValue[3] = 0x00;
-        write_char(0x19, writeValue, 4);
+        //writeValue[0] = 0x01;
+        //writeValue[1] = 0x02;
+        //writeValue[2] = 0x00;
+        //writeValue[3] = 0x00;
+        //write_char(0x19, writeValue, 4);
         
-        writeValue[1] = 0x00;
-        write_char(0x2f, writeValue, 2);
-        write_char(0x2c, writeValue, 2);
-        write_char(0x32, writeValue, 2);
-        write_char(0x35, writeValue, 2);
+        //writeValue[1] = 0x00;
+        //write_char(0x2f, writeValue, 2);
+        //write_char(0x2c, writeValue, 2);
+        //write_char(0x32, writeValue, 2);
+        //write_char(0x35, writeValue, 2);
 
         //enable EMG data
-        write_char(0x28, writeValue, 2);
+        myo_EMG_notify_enable(TRUE);
         //enable IMU data
-        write_char(0x1d, writeValue, 2);
+        myo_IMU_notify_enable(TRUE);
 
         //Sampling rate of the underlying EMG sensor, capped to 1000. If it's less than 1000, emg_hz is correct. If it is greater, the actual framerate starts dropping inversely. Also, if this is much less than 1000, EMG data becomes slower to respond to changes. In conclusion, 1000 is probably a good value.
-        C = 1000;
-        emg_hz = 50;
+        //C = 1000;
+        //emg_hz = 50;
         //strength of low-pass filtering of EMG data
-        emg_smooth = 100;
+        //emg_smooth = 100;
 
-        imu_hz = 50;
+        //imu_hz = 50;
 
         //send sensor parameters, or we don't get any data
-        writeValue[0] = 2;
-        writeValue[1] = 9;
-        writeValue[2] = 2;
-        writeValue[3] = 1;
-        *((short*) (writeValue + 4)) = C;
-        writeValue[6] = emg_smooth;
-        writeValue[7] = C/emg_hz;
-        writeValue[8] = imu_hz;
-        writeValue[9] = 0;
-        writeValue[10] = 0;
-        write_char(0x19, writeValue, 11);
+        //writeValue[0] = 2;
+        //writeValue[1] = 9;
+        //writeValue[2] = 2;
+        //writeValue[3] = 1;
+        //*((short*) (writeValue + 4)) = C;
+        //writeValue[6] = emg_smooth;
+        //writeValue[7] = C/emg_hz;
+        //writeValue[8] = imu_hz;
+        //writeValue[9] = 0;
+        //writeValue[10] = 0;
+        //write_char(0x19, writeValue, 11);
     } else {
-        read_char(0x03);
-        //printf("device name: %s", readValue);
+        myo_get_name(name);
+        printf("device name: %s", name);
 
         //enable IMU data
-        writeValue[0] = 0x01;
-        writeValue[1] = 0x00;
-        write_char(0x1d, writeValue, 2);
+        myo_IMU_notify_enable(true);
         //enable on/off arm notifications
-        writeValue[0] = 0x02;
-        write_char(0x24, writeValue, 2);
+        myo_arm_indicate_enable(true);
 
-        //write_char(0x19, b'\x01\x03\x00\x01\x01'); //normal
-        //start_raw();
+        myo_update_enable(false, true, false);
     }
     
     printf("Initialized!\n");
@@ -363,7 +479,7 @@ int main(void) {
     service_conn_id = 0;
     
     error = NULL;
-    loop = g_main_loop_new(NULL, FALSE);
+    loop = g_main_loop_new(NULL, false);
     status = DISCONNECTED;
     
     bluez_manager =
