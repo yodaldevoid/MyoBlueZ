@@ -363,29 +363,46 @@ void myo_EMG_notify_enable(bool enable){
     _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
                 G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
                 "org.bluez.GattCharacteristic1", NULL, &error);
+    ASSERT(error, "Failed to get EMG characteristic");
     //call start notify or stop notify
     g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    ASSERT(error, "EMG notify enable/disable failed");
 }
 
 void myo_IMU_notify_enable(bool enable){
-    GVariant *chars;
+    GVariant *chars, *UUID;
     const char **char_paths;
     GDBusProxy _char;
+    const char *UUID_str;
     
     //get IMU data characteristic from service
     chars = g_dbus_proxy_get_cached_property(emg_service, "Characteristics");
     char_paths = g_variant_get_objv(chars, NULL);
-    //TODO: check UUID because the IMU service has two chars
     if(char_paths[0] == NULL) {
         //error
     }
     _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
-                "org.bluez.GattCharacteristic1", NULL, &error);
+                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
+                    "org.bluez.GattCharacteristic1", NULL, &error);
+    ASSERT(error, "Failed to get IMU characteristic");
+    //check UUID because the IMU service has two chars
+    UUID = g_dbus_proxy_get_cached_property(_char, "UUID");
+    if(UUID == NULL) {
+        return;
+    }
+    UUID_str = g_variant_get_string(UUID);
+    if(strcmp(UUID_str, "d5060402-a904-deb9-4748-2c7f4a124842") != 0) {
+        g_object_unref(_char);
+        _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[1],
+                    "org.bluez.GattCharacteristic1", NULL, &error);
+        ASSERT(error, "Failed to get other IMU characteristic");
+    }
     //call start notify or stop notify
     g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    ASSERT(error, "IMU notify enable/disable failed");
 }
 
 void myo_arm_indicate_enable(bool enable) {
@@ -402,9 +419,11 @@ void myo_arm_indicate_enable(bool enable) {
     _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
                 G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
                 "org.bluez.GattCharacteristic1", NULL, &error);
+    ASSERT(error, "Failed to get arm characteristic");
     //call start notify or stop notify
     g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    ASSERT(error, "Arm notify enable/disable failed");
 }
 
 void myo_update_enable(bool emg, bool imu, bool arm) {
