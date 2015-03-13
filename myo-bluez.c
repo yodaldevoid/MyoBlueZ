@@ -112,7 +112,7 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-void is_interface_myo(GDBusObjectManager *manager, GDBusObject *object,
+void interface_added_myo(GDBusObjectManager *manager, GDBusObject *object,
                             GDBusInterface *interface, gpointer user_data) {
     GVariant *reply;
     
@@ -128,7 +128,7 @@ void is_interface_myo(GDBusObjectManager *manager, GDBusObject *object,
     }
 }
 
-void is_interface_service(GDBusObjectManager *manager, GDBusObject *object,
+void interface_added_service(GDBusObjectManager *manager, GDBusObject *object,
                             GDBusInterface *interface, gpointer user_data) {
     if(is_service(object, NULL)) {
         //TODO: GattService registration
@@ -192,7 +192,7 @@ int myo_scan() {
             printf("Discovery started\n");
             
             myo_conn_id = g_signal_connect(bluez_manager, "interface-added",
-                                        G_CALLBACK(is_interface_myo), NULL);
+                                        G_CALLBACK(interface_added_myo), NULL);
             
             reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
