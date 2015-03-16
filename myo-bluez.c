@@ -15,12 +15,28 @@
         g_error_free(GERR); \
     }
     
-#define GAP_UUID "00001800-0000-1000-8000-00805f9b34fb"
-#define BATT_UUID "0000180f-0000-1000-8000-00805f9b34fb"
-#define MYO_UUID "d5060001-a904-deb9-4748-2c7f4a124842"
-#define IMU_UUID "d5060002-a904-deb9-4748-2c7f4a124842"
-#define ARM_UUID "d5060003-a904-deb9-4748-2c7f4a124842"
-#define EMG_UUID "d5060004-a904-deb9-4748-2c7f4a124842"
+const char *GAP_UUID = "00001800-0000-1000-8000-00805f9b34fb";
+const char *GAP_CHAR_UUIDS[] = {"00002a00-0000-1000-8000-00805f9b34fb",
+                                "00002a01-0000-1000-8000-00805f9b34fb",
+                                "00002a04-0000-1000-8000-00805f9b34fb"};
+
+const char *BATT_UUID = "0000180f-0000-1000-8000-00805f9b34fb";
+const char *BATT_CHAR_UUIDS[] = {"00002a19-0000-1000-8000-00805f9b34fb"};
+
+const char *MYO_UUID = "d5060001-a904-deb9-4748-2c7f4a124842";
+const char *MYO_CHAR_UUIDS[] = {"d5060101-a904-deb9-4748-2c7f4a124842",
+                                "d5060201-a904-deb9-4748-2c7f4a124842",
+                                "d5060401-a904-deb9-4748-2c7f4a124842"};
+
+const char *IMU_UUID = "d5060002-a904-deb9-4748-2c7f4a124842";
+const char *IMU_CHAR_UUIDS[] = {"d5060402-a904-deb9-4748-2c7f4a124842",
+                                "d5060502-a904-deb9-4748-2c7f4a124842"};
+
+const char *ARM_UUID = "d5060003-a904-deb9-4748-2c7f4a124842";
+const char *ARM_CHAR_UUIDS[] = {"d5060103-a904-deb9-4748-2c7f4a124842"};
+
+const char *EMG_UUID = "d5060004-a904-deb9-4748-2c7f4a124842";
+const char *EMG_CHAR_UUIDS[] = {"d5060104-a904-deb9-4748-2c7f4a124842"};
 
 enum MyoStatus {
     DISCONNECTED,
@@ -38,35 +54,37 @@ static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
 static GDBusProxy *myo;
 
-typedef GattService service {
-    char UUID[37];
+typedef struct GattService {
+    const char *UUID;
     GDBusProxy *proxy;
-    char **char_UUIDs;
+    GDBusObjectManagerClient *gatt_manager;
+    const char **char_UUIDs;
     GDBusProxy **char_proxies;
     int num_chars;
-};
+} GattService;
 
-static GDBusObjectManagerClient *gatt_manager;
-static GattService generic_access_service;
-static GattService battery_service;
-static GattService myo_control_service;
-static GattService IMU_service;
-static GattService arm_service;
-static GattService emg_service;
+//TODO: add unknown services
+#define NUM_SERVICES 6
+static GattService services[NUM_SERVICES] = {
+    {GAP_UUID, NULL, NULL, GAP_CHAR_UUIDS, NULL, 3},
+    {BATT_UUID, NULL, NULL, BATT_CHAR_UUIDS, NULL, 1},
+    {MYO_UUID, NULL, NULL, MYO_CHAR_UUIDS, NULL, 3},
+    {IMU_UUID, NULL, NULL, IMU_CHAR_UUIDS, NULL, 2},
+    {ARM_UUID, NULL, NULL, ARM_CHAR_UUIDS, NULL, 1},
+    {EMG_UUID, NULL, NULL, EMG_CHAR_UUIDS, NULL, 1}
+};
+#define generic_access_service services[0]
+#define battery_service services[1]
+#define myo_control_service services[2]
+#define IMU_service services[3]
+#define arm_service services[4]
+#define emg_service services[5]
 
 int myo_connect();
 void myo_initialize();
 
-void init_GattService(GattService *service, char *UUID, char **char_UUIDS, int num_chars) {
-    int i;
-    
-    strcpy(service->UUID, UUID);
-    service->char_UUIDs = malloc((num_chars + 1) * sizeof(char*));
-    for(i = 0; i < num_chars; i++) {
-        service->char_UUIDs[i] = malloc(37 * sizeof(char));
-        strcpy(service->char_UUIDs[i], char_UUIDS[i]);
-    }
-    service->char_UUIDs[num_chars] = NULL;
+void init_GattService(GattService *service) {
+    service->char_proxies = malloc(num_chars * sizeof(GDBusProxy*));
 }
 
 gint is_adapter(gconstpointer a, gconstpointer b) {
@@ -125,6 +143,18 @@ gint is_service(gconstpointer a, gconstpointer b) {
     }
 }
 
+gint is_characteristic(gconstpointer a, gconstpointer b) {
+    GDBusInterface *interface;
+    
+    interface = g_dbus_object_get_interface((GDBusObject*) a, "org.bluez.GattService1");
+    if(NULL == interface) {
+        return 1;
+    } else {
+        g_object_unref(interface);
+        return 0;
+    }
+}
+
 void set_service(GDBusObject *object) {
     GVariant *UUID;
     const char *UUID_str;
@@ -137,43 +167,42 @@ void set_service(GDBusObject *object) {
     }
     UUID_str = g_variant_get_string(UUID);
     
-    if(strcmp(UUID_str, GAP_UUID) == 0) {
-        generic_access_service->service = g_dbus_proxy_new_for_bus_sync(
+    for(i = 0; i < NUM_SERVICES; i++) {
+        if(strcmp(UUID_str, services[i].UUID) == 0) {
+            services.service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
-        ASSERT(error, "Get generic_access_service failed");
-    } else if(strcmp(UUID_str, BATT_UUID)) {
-        battery_service->service = g_dbus_proxy_new_for_bus_sync(
-                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-                            "org.bluez", g_dbus_object_get_object_path(object),
-                            "org.bluez.GATTService1", NULL, &error);
-        ASSERT(error, "Get generic_access_service failed");
-    } else if(strcmp(UUID_str, MYO_UUID)) {
-        myo_control_service->service = g_dbus_proxy_new_for_bus_sync(
-                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-                            "org.bluez", g_dbus_object_get_object_path(object),
-                            "org.bluez.GATTService1", NULL, &error);
-        ASSERT(error, "Get generic_access_service failed");
-    } else if(strcmp(UUID_str, IMU_UUID)) {
-        IMU_service->service = g_dbus_proxy_new_for_bus_sync(
-                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-                            "org.bluez", g_dbus_object_get_object_path(object),
-                            "org.bluez.GATTService1", NULL, &error);
-        ASSERT(error, "Get generic_access_service failed");
-    } else if(strcmp(UUID_str, ARM_UUID)) {
-        arm_service->service = g_dbus_proxy_new_for_bus_sync(
-                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-                            "org.bluez", g_dbus_object_get_object_path(object),
-                            "org.bluez.GATTService1", NULL, &error);
-        ASSERT(error, "Get generic_access_service failed");
-    } else if(strcmp(UUID_str, EMG_UUID)) {
-        emg_service->service = g_dbus_proxy_new_for_bus_sync(
-                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-                            "org.bluez", g_dbus_object_get_object_path(object),
-                            "org.bluez.GATTService1", NULL, &error);
-        ASSERT(error, "Get generic_access_service failed");
+            ASSERT(error, "Get generic_access_service failed");
+            
+            services.gatt_manager = (GDBusObjectManagerClient*)
+                g_dbus_object_manager_client_new_for_bus_sync(
+                    G_BUS_TYPE_SYSTEM, G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
+                    "org.bluez", g_dbus_object_get_object_path(object), NULL, 
+                    NULL, NULL, NULL, &error);
+            ASSERT(error, "Get ObjectManager failed");
+            
+            g_signal_connect(gatt_manager, "interface-added",
+                                G_CALLBACK(is_interface_characteristic), NULL);
+        }
     }
+    
+    g_variant_unref(UUID);
+}
+
+void set_characteristic(GDBusObject *object) {
+    GVariant *UUID;
+    const char *UUID_str;
+    
+    //check UUIDs for which service
+    //get UUID
+    UUID = g_dbus_proxy_get_cached_property((GDBusProxy*) object, "UUID");
+    if(UUID == NULL) {
+        return;
+    }
+    UUID_str = g_variant_get_string(UUID);
+    
+    //TODO: set characteristics
     
     g_variant_unref(UUID);
 }
@@ -225,6 +254,13 @@ void interface_added_service(GDBusObjectManager *manager, GDBusObject *object,
                             GDBusInterface *interface, gpointer user_data) {
     if(is_service(object, NULL)) {
         set_service(object);
+    }
+}
+
+void interface_added_characteristic(GDBusObjectManager *manager,
+        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
+    if(is_characteristic(object, NULL)) {
+        set_characteristic(object);
     }
 }
 
@@ -332,7 +368,7 @@ int myo_connect(GDBusObject *object) {
     
     //search for
     g_signal_connect(bluez_manager, "interface-added",
-                                        G_CALLBACK(is_interface_service), NULL);
+                                G_CALLBACK(is_interface_service), NULL);
     
     //search for services that are already registered
     objects = g_dbus_object_manager_get_objects((GDBusObjectManager*) bluez_manager);
@@ -374,7 +410,7 @@ void myo_EMG_notify_enable(bool enable){
     GDBusProxy _char;
     
     //get emg data characteristic from service
-    chars = g_dbus_proxy_get_cached_property(emg_service, "Characteristics");
+    chars = g_dbus_proxy_get_cached_property(emg_service.service, "Characteristics");
     char_paths = g_variant_get_objv(chars, NULL);
     if(char_paths[0] == NULL) {
         //error
@@ -396,7 +432,7 @@ void myo_IMU_notify_enable(bool enable){
     const char *UUID_str;
     
     //get IMU data characteristic from service
-    chars = g_dbus_proxy_get_cached_property(emg_service, "Characteristics");
+    chars = g_dbus_proxy_get_cached_property(emg_service.service, "Characteristics");
     char_paths = g_variant_get_objv(chars, NULL);
     if(char_paths[0] == NULL) {
         //error
@@ -430,7 +466,7 @@ void myo_arm_indicate_enable(bool enable) {
     GDBusProxy _char;
     
     //get arm data characteristic from service
-    chars = g_dbus_proxy_get_cached_property(emg_service, "Characteristics");
+    chars = g_dbus_proxy_get_cached_property(emg_service.service, "Characteristics");
     char_paths = g_variant_get_objv(chars, NULL);
     if(char_paths[0] == NULL) {
         //error
@@ -543,6 +579,9 @@ void stop_myo(int sig) {
         bluez_manager = NULL;
     }
     
+    
+    //TODO: unref gatt objects
+    
     if(loop != NULL) {
         if(g_main_loop_is_running(loop)) {
             g_main_loop_quit(loop);
@@ -558,6 +597,13 @@ int main(void) {
     
     myo_conn_id = 0;
     service_conn_id = 0;
+    
+    init_GattService(generic_access_service);
+    init_GattService(battery_service);
+    init_GattService(myo_control_service);
+    init_GattService(imu_service);
+    init_GattService(arm_service);
+    init_GattService(emg_service);
     
     error = NULL;
     loop = g_main_loop_new(NULL, false);
