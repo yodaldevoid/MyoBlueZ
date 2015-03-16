@@ -38,17 +38,36 @@ static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
 static GDBusProxy *myo;
 
+typedef GattService service {
+    char UUID[37];
+    GDBusProxy *proxy;
+    char **char_UUIDs;
+    GDBusProxy **char_proxies;
+    int num_chars;
+};
+
 static GDBusObjectManagerClient *gatt_manager;
-//TODO: maybe make structs for services and characteristics
-static GDBusProxy *generic_access_service;
-static GDBusProxy *battery_service;
-static GDBusProxy *myo_control_service;
-static GDBusProxy *IMU_service;
-static GDBusProxy *arm_service;
-static GDBusProxy *emg_service;
+static GattService generic_access_service;
+static GattService battery_service;
+static GattService myo_control_service;
+static GattService IMU_service;
+static GattService arm_service;
+static GattService emg_service;
 
 int myo_connect();
 void myo_initialize();
+
+void init_GattService(GattService *service, char *UUID, char **char_UUIDS, int num_chars) {
+    int i;
+    
+    strcpy(service->UUID, UUID);
+    service->char_UUIDs = malloc((num_chars + 1) * sizeof(char*));
+    for(i = 0; i < num_chars; i++) {
+        service->char_UUIDs[i] = malloc(37 * sizeof(char));
+        strcpy(service->char_UUIDs[i], char_UUIDS[i]);
+    }
+    service->char_UUIDs[num_chars] = NULL;
+}
 
 gint is_adapter(gconstpointer a, gconstpointer b) {
     GDBusInterface *interface;
@@ -119,37 +138,37 @@ void set_service(GDBusObject *object) {
     UUID_str = g_variant_get_string(UUID);
     
     if(strcmp(UUID_str, GAP_UUID) == 0) {
-        generic_access_service = g_dbus_proxy_new_for_bus_sync(
+        generic_access_service->service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
         ASSERT(error, "Get generic_access_service failed");
     } else if(strcmp(UUID_str, BATT_UUID)) {
-        battery_service = g_dbus_proxy_new_for_bus_sync(
+        battery_service->service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
         ASSERT(error, "Get generic_access_service failed");
     } else if(strcmp(UUID_str, MYO_UUID)) {
-        myo_control_service = g_dbus_proxy_new_for_bus_sync(
+        myo_control_service->service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
         ASSERT(error, "Get generic_access_service failed");
     } else if(strcmp(UUID_str, IMU_UUID)) {
-        IMU_service = g_dbus_proxy_new_for_bus_sync(
+        IMU_service->service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
         ASSERT(error, "Get generic_access_service failed");
     } else if(strcmp(UUID_str, ARM_UUID)) {
-        arm_service = g_dbus_proxy_new_for_bus_sync(
+        arm_service->service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
         ASSERT(error, "Get generic_access_service failed");
     } else if(strcmp(UUID_str, EMG_UUID)) {
-        emg_service = g_dbus_proxy_new_for_bus_sync(
+        emg_service->service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
@@ -183,7 +202,7 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
 }
 
 void myo_data_cb() {
-    //TODO:
+    //TODO: data callback
 }
 
 void interface_added_myo(GDBusObjectManager *manager, GDBusObject *object,
@@ -341,12 +360,12 @@ int myo_connect(GDBusObject *object) {
 
 int myo_get_name(char *str) {
     //get name of myo from generic access and return length
-    //TODO:
+    //TODO: get name
 }
 
 void myo_get_version(char *ver_arr) {
     //get version from myo control service
-    //TODO:
+    //TODO: get version
 }
 
 void myo_EMG_notify_enable(bool enable){
@@ -427,7 +446,7 @@ void myo_arm_indicate_enable(bool enable) {
 }
 
 void myo_update_enable(bool emg, bool imu, bool arm) {
-    //TODO:
+    //TODO: update enable
 }
 
 void myo_initialize() {
