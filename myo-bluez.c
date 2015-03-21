@@ -76,21 +76,46 @@ static GattService services[NUM_SERVICES] = {
 #define generic_access_service services[0]
 #define battery_service services[1]
 #define myo_control_service services[2]
-#define IMU_service services[3]
+#define imu_service services[3]
 #define arm_service services[4]
 #define emg_service services[5]
+
+#define version myo_control_service.char_proxies[1]
+#define cmd_input myo_control_service.char_proxies[2]
+#define imu_data imu_service.char_proxies[0]
+#define arm_data arm_service.char_proxies[0]
+#define emg_data emg_service.char_proxies[0]
+
+enum ArmDataType {
+    WORN = 1,
+    REMOVED,
+    POSE,
+};
+
+enum ArmSide {
+    NONE,
+    RIGHT,
+    LEFT,
+};
+
+enum ArmXDirection {
+    UNKNOWN,
+    X_TO_WRIST,
+    X_TO_ELBOW,
+};
 
 int myo_connect();
 void myo_initialize();
 
 void init_GattService(GattService *service) {
-    service->char_proxies = malloc(num_chars * sizeof(GDBusProxy*));
+    service->char_proxies = calloc(num_chars, sizeof(GDBusProxy*));
 }
 
 gint is_adapter(gconstpointer a, gconstpointer b) {
     GDBusInterface *interface;
     
-    interface = g_dbus_object_get_interface((GDBusObject*) a, "org.bluez.Adapter1");
+    interface = g_dbus_object_get_interface((GDBusObject*) a,
+                                                        "org.bluez.Adapter1");
     if(NULL == interface) {
         return 1;
     } else {
@@ -109,7 +134,8 @@ gint is_myo(gconstpointer a, gconstpointer b) {
     
     ret = 1;
     
-    proxy = (GDBusProxy*) g_dbus_object_get_interface((GDBusObject*) a, "org.bluez.Device1");
+    proxy = (GDBusProxy*) g_dbus_object_get_interface((GDBusObject*) a,
+                                                        "org.bluez.Device1");
     if(proxy != NULL) {
         UUIDs_var = g_dbus_proxy_get_cached_property(proxy, "UUIDs");
         if(UUIDs_var != NULL) {
@@ -134,7 +160,8 @@ gint is_myo(gconstpointer a, gconstpointer b) {
 gint is_service(gconstpointer a, gconstpointer b) {
     GDBusInterface *interface;
     
-    interface = g_dbus_object_get_interface((GDBusObject*) a, "org.bluez.GattService1");
+    interface = g_dbus_object_get_interface((GDBusObject*) a,
+                                                    "org.bluez.GattService1");
     if(NULL == interface) {
         return 1;
     } else {
@@ -146,7 +173,8 @@ gint is_service(gconstpointer a, gconstpointer b) {
 gint is_characteristic(gconstpointer a, gconstpointer b) {
     GDBusInterface *interface;
     
-    interface = g_dbus_object_get_interface((GDBusObject*) a, "org.bluez.GattService1");
+    interface = g_dbus_object_get_interface((GDBusObject*) a,
+                                                    "org.bluez.GattService1");
     if(NULL == interface) {
         return 1;
     } else {
@@ -169,7 +197,7 @@ void set_service(GDBusObject *object) {
     
     for(i = 0; i < NUM_SERVICES; i++) {
         if(strcmp(UUID_str, services[i].UUID) == 0) {
-            services.service = g_dbus_proxy_new_for_bus_sync(
+            services[i].service = g_dbus_proxy_new_for_bus_sync(
                             G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
                             "org.bluez", g_dbus_object_get_object_path(object),
                             "org.bluez.GATTService1", NULL, &error);
@@ -191,8 +219,10 @@ void set_service(GDBusObject *object) {
 }
 
 void set_characteristic(GDBusObject *object) {
-    GVariant *UUID;
-    const char *UUID_str;
+    int i, j;
+    GDBusProxy *service;
+    GVariant *UUID, *serv_UUID, *path;
+    const char *UUID_str, *serv_UUID_str;
     
     //check UUIDs for which service
     //get UUID
@@ -202,13 +232,49 @@ void set_characteristic(GDBusObject *object) {
     }
     UUID_str = g_variant_get_string(UUID);
     
-    //TODO: set characteristics
+    //get service object path
+    path = g_dbus_proxy_get_cached_property((GDBusProxy*) object, "Service");
+    if(path == NULL) {
+        return;
+    }
     
+    service = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+                                    g_variant_get_string(path),
+                                    "org.bluez.GattService1", NULL, &error);
+    ASSERT(error, "Get service for characteristic failed");
+    
+    //get service UUID string
+    serv_UUID = g_dbus_proxy_get_cached_property(service, "UUID");
+    if(serv_UUID == NULL) {
+        return;
+    }
+    serv_UUID_str = g_variant_get_string(serv_UUID);
+    
+    for(i = 0; i < NUM_SERVICES; i++) {
+        if(strcmp(services[i].UUID, serv_UUID_str) == 0) {
+            break;
+        }
+    }
+    
+    for(j = 0; j < services[i].num_chars; j++) {
+        if(strcmp(services[i].char_UUIDs[j], UUID_str) == 0) {
+            services[i].char_proxies[j] = g_dbus_proxy_new_for_bus_sync(
+                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
+                            "org.bluez", g_dbus_object_get_object_path(object),
+                            "org.bluez.GattCharacteristic1", NULL, &error);
+            ASSERT(error, "Get characteristic failed");
+        }
+    }
+    
+    g_object_unref(service);
+    
+    g_variant_unref(serv_UUID);
     g_variant_unref(UUID);
 }
 
 void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
-                    gpointer user_data) {
+                                                        gpointer user_data) {
     GVariantIter *iter;
     const gchar *key;
     GVariant *value;
@@ -230,8 +296,78 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-void myo_data_cb() {
-    //TODO: data callback
+void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+                                                        gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key, *vals;
+    GVariant *value;
+    
+    short quat[4], acc[3], gyro[3];
+    
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            if(strcmp(key, "Value") == 0) {
+                vals = g_variant_get_fixed_array(value, NULL, sizeof(gchar));
+                memcpy(quat, vals, 8);
+                memcpy(acc, vals + 8, 6);
+                memcpy(gyro, vals + 14, 6);
+                on_imu(quat, acc, gyro);
+            }
+        }
+        g_variant_iter_free (iter);
+    }
+}
+
+void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+                                                        gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key, *vals;
+    GVariant *value;
+    
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            if(strcmp(key, "Value") == 0) {
+                vals = g_variant_get_fixed_array(value, NULL, sizeof(gchar));
+                //typ, val, xdir = unpack('3B', pay)
+                if(vals[0] == WORN) { // on arm
+                    on_arm(vlas[1], vals[2]);
+                } else if(vals[0] == REMOVED) { // removed from arm
+                    on_arm(NONE, UNKNOWN);
+                } else if(vals[0] == POSE) { // pose
+                    on_pose(vals[1]);
+                }
+            }
+        }
+        g_variant_iter_free (iter);
+    }
+}
+
+void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+                                                        gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key, *vals;
+    GVariant *value;
+    
+    short emg[8];
+    unsigned char moving;
+    
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            if(strcmp(key, "Value") == 0) {
+                vals = g_variant_get_fixed_array(value, NULL, sizeof(gchar));
+                //not entirely sure what the last byte is, but it's a bitmask
+                //that seems to indicate which sensors think they're being moved
+                //around or something
+                memcpy(emg, vals, 16);
+                moving = vals[16];
+                on_emg(emg, moving);
+            }
+        }
+        g_variant_iter_free (iter);
+    }
 }
 
 void interface_added_myo(GDBusObjectManager *manager, GDBusObject *object,
@@ -268,7 +404,8 @@ int get_adapter() {
     GList *objects;
     GList *object;
     
-    objects = g_dbus_object_manager_get_objects((GDBusObjectManager*) bluez_manager);
+    objects = g_dbus_object_manager_get_objects(
+                                        (GDBusObjectManager*) bluez_manager);
     if(NULL == objects) {
         //failed
         fprintf (stderr, "Manger did not give us objects!\n");
@@ -299,7 +436,8 @@ int myo_scan() {
     GVariant *reply;
     
     //get adapter
-    objects = g_dbus_object_manager_get_objects((GDBusObjectManager*) bluez_manager);
+    objects = g_dbus_object_manager_get_objects(
+                                        (GDBusObjectManager*) bluez_manager);
     if(NULL == objects) {
         //failed
         fprintf (stderr, "Manger did not give us objects!\n");
@@ -311,7 +449,8 @@ int myo_scan() {
         object = g_list_find_custom(objects, NULL, is_myo);
         if(NULL != object) {
             //Myo has been found so we don't have to scan for it
-            //TODO: might be a problem if there are multiple Myos and this one cannot be connected to
+            //TODO: might be a problem if there are multiple Myos and this one
+            //cannot be connected to
             myo_connect((GDBusObject*) object->data);
         }
         
@@ -354,7 +493,8 @@ int myo_connect(GDBusObject *object) {
     }
     
     //set watcher for disconnect
-    g_signal_connect(myo, "g-properties-changed", G_CALLBACK(disconnect_cb), NULL);
+    g_signal_connect(myo, "g-properties-changed",
+                                            G_CALLBACK(disconnect_cb), NULL);
     
     printf("Connecting...\n");
     reply = g_dbus_proxy_call_sync(myo, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE,
@@ -371,7 +511,8 @@ int myo_connect(GDBusObject *object) {
                                 G_CALLBACK(is_interface_service), NULL);
     
     //search for services that are already registered
-    objects = g_dbus_object_manager_get_objects((GDBusObjectManager*) bluez_manager);
+    objects = g_dbus_object_manager_get_objects(
+                                        (GDBusObjectManager*) bluez_manager);
     if(NULL == objects) {
         //failed
         fprintf (stderr, "Manger did not give us objects!\n");
@@ -399,90 +540,61 @@ int myo_get_name(char *str) {
     //TODO: get name
 }
 
-void myo_get_version(char *ver_arr) {
-    //get version from myo control service
-    //TODO: get version
+void myo_get_version(char *ver) {
+    GVariant *ver_var;
+    gchar *ver_arr;
+    
+    ver_var = g_dbus_proxy_call_sync(cmd_input, "WriteValue", data_var,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                                    
+    ver_arr = g_variant_get_fixed_array(ver_var, NULL, sizeof(gchar));
+    
+    //_, _, _, _, v0, v1, v2, v3 = unpack('BHBBHHHH', fw.payload)
+    memcpy(ver, ver_arr + 4, 2);
+    memcpy(ver, ver_arr + 6, 2);
+    memcpy(ver, ver_arr + 8, 2);
+    memcpy(ver, ver_arr + 10, 2);
 }
 
 void myo_EMG_notify_enable(bool enable){
-    GVariant *chars;
-    const char **char_paths;
-    GDBusProxy _char;
-    
-    //get emg data characteristic from service
-    chars = g_dbus_proxy_get_cached_property(emg_service.service, "Characteristics");
-    char_paths = g_variant_get_objv(chars, NULL);
-    if(char_paths[0] == NULL) {
-        //error
+    if(emg_data == NULL) {
+        return;
     }
-    _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
-                "org.bluez.GattCharacteristic1", NULL, &error);
-    ASSERT(error, "Failed to get EMG characteristic");
     //call start notify or stop notify
-    g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
-                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    g_dbus_proxy_call_sync(emg_data, enable ? "StartNotify" : "StopNotify",
+                                NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     ASSERT(error, "EMG notify enable/disable failed");
 }
 
 void myo_IMU_notify_enable(bool enable){
-    GVariant *chars, *UUID;
-    const char **char_paths;
-    GDBusProxy _char;
-    const char *UUID_str;
-    
-    //get IMU data characteristic from service
-    chars = g_dbus_proxy_get_cached_property(emg_service.service, "Characteristics");
-    char_paths = g_variant_get_objv(chars, NULL);
-    if(char_paths[0] == NULL) {
-        //error
-    }
-    _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
-                    "org.bluez.GattCharacteristic1", NULL, &error);
-    ASSERT(error, "Failed to get IMU characteristic");
-    //check UUID because the IMU service has two chars
-    UUID = g_dbus_proxy_get_cached_property(_char, "UUID");
-    if(UUID == NULL) {
+    if(imu_data == NULL) {
         return;
     }
-    UUID_str = g_variant_get_string(UUID);
-    if(strcmp(UUID_str, "d5060402-a904-deb9-4748-2c7f4a124842") != 0) {
-        g_object_unref(_char);
-        _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[1],
-                    "org.bluez.GattCharacteristic1", NULL, &error);
-        ASSERT(error, "Failed to get other IMU characteristic");
-    }
     //call start notify or stop notify
-    g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
-                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    g_dbus_proxy_call_sync(imu_data, enable ? "StartNotify" : "StopNotify",
+                                NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     ASSERT(error, "IMU notify enable/disable failed");
 }
 
 void myo_arm_indicate_enable(bool enable) {
-    GVariant *chars;
-    const char **char_paths;
-    GDBusProxy _char;
-    
-    //get arm data characteristic from service
-    chars = g_dbus_proxy_get_cached_property(emg_service.service, "Characteristics");
-    char_paths = g_variant_get_objv(chars, NULL);
-    if(char_paths[0] == NULL) {
-        //error
+    if(arm_data == NULL) {
+        return;
     }
-    _char = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_paths[0],
-                "org.bluez.GattCharacteristic1", NULL, &error);
-    ASSERT(error, "Failed to get arm characteristic");
     //call start notify or stop notify
-    g_dbus_proxy_call_sync(_char, enable ? "StartNotify" : "StopNotify", NULL,
-                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    g_dbus_proxy_call_sync(arm_data, enable ? "StartNotify" : "StopNotify",
+                                NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     ASSERT(error, "Arm notify enable/disable failed");
 }
 
 void myo_update_enable(bool emg, bool imu, bool arm) {
-    //TODO: update enable
+    GVariant *data_var;
+    unsigned char data[] = {0x01, 0x03, emg ? 0x01 : 0x00,
+                                        imu ? 0x01 : 0x00,
+                                        arm ? 0x01 : 0x00};
+    //TODO:create variant
+    
+    g_dbus_proxy_call_sync(cmd_input, "WriteValue", data_var,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 }
 
 void myo_initialize() {
@@ -503,7 +615,9 @@ void myo_initialize() {
     //if old do the thing
     //else do the other thing (configure)
     if(!new) {
-        //don't know what these do; Myo Connect sends them, though we get data fine without them
+        //don't know what these do; Myo Connect sends them, though we get data
+        //fine without them
+        
         //writeValue[0] = 0x01;
         //writeValue[1] = 0x02;
         //writeValue[2] = 0x00;
@@ -517,11 +631,16 @@ void myo_initialize() {
         //write_char(0x35, writeValue, 2);
 
         //enable EMG data
-        myo_EMG_notify_enable(TRUE);
+        myo_EMG_notify_enable(true);
         //enable IMU data
-        myo_IMU_notify_enable(TRUE);
+        myo_IMU_notify_enable(true);
 
-        //Sampling rate of the underlying EMG sensor, capped to 1000. If it's less than 1000, emg_hz is correct. If it is greater, the actual framerate starts dropping inversely. Also, if this is much less than 1000, EMG data becomes slower to respond to changes. In conclusion, 1000 is probably a good value.
+        //Sampling rate of the underlying EMG sensor, capped to 1000. If it's
+        //less than 1000, emg_hz is correct. If it is greater, the actual
+        //framerate starts dropping inversely. Also, if this is much less than
+        //1000, EMG data becomes slower to respond to changes. In conclusion,
+        //1000 is probably a good value.
+        
         //C = 1000;
         //emg_hz = 50;
         //strength of low-pass filtering of EMG data
@@ -557,14 +676,15 @@ void myo_initialize() {
 }
 
 void stop_myo(int sig) {
+    int i, j;
     GVariant *reply;
     
     //unref stuff
     if(myo != NULL) {
         if(status == CONNECTED) {
             //disconnect
-            reply = g_dbus_proxy_call_sync(myo, "Disconnect", NULL, G_DBUS_CALL_FLAGS_NONE,
-                        -1, NULL, &error);
+            reply = g_dbus_proxy_call_sync(myo, "Disconnect", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
             g_variant_unref(reply);
         }
         g_object_unref(myo);
@@ -579,8 +699,16 @@ void stop_myo(int sig) {
         bluez_manager = NULL;
     }
     
-    
-    //TODO: unref gatt objects
+    for(i = 0; i < NUM_SERVICES; i++) {
+        for(j = 0; j < service[i].num_chars; j++) {
+            if(service[i].char_proxies[j] != NULL) {
+                g_object_unref(service[i].char_proxies[j]);
+            }
+        }
+        if(service[i].proxy != NULL) {
+            g_object_unref(service[i].proxy);
+        }
+    }
     
     if(loop != NULL) {
         if(g_main_loop_is_running(loop)) {
