@@ -15,28 +15,28 @@
         g_error_free(GERR); \
     }
     
-const char *GAP_UUID = "00001800-0000-1000-8000-00805f9b34fb";
-const char *GAP_CHAR_UUIDS[] = {"00002a00-0000-1000-8000-00805f9b34fb",
-                                "00002a01-0000-1000-8000-00805f9b34fb",
-                                "00002a04-0000-1000-8000-00805f9b34fb"};
+static const char *GAP_UUID = "00001800-0000-1000-8000-00805f9b34fb";
+static const char *GAP_CHAR_UUIDS[] = {"00002a00-0000-1000-8000-00805f9b34fb",
+                                        "00002a01-0000-1000-8000-00805f9b34fb",
+                                        "00002a04-0000-1000-8000-00805f9b34fb"};
 
-const char *BATT_UUID = "0000180f-0000-1000-8000-00805f9b34fb";
-const char *BATT_CHAR_UUIDS[] = {"00002a19-0000-1000-8000-00805f9b34fb"};
+static const char *BATT_UUID = "0000180f-0000-1000-8000-00805f9b34fb";
+static const char *BATT_CHAR_UUIDS[] = {"00002a19-0000-1000-8000-00805f9b34fb"};
 
-const char *MYO_UUID = "d5060001-a904-deb9-4748-2c7f4a124842";
-const char *MYO_CHAR_UUIDS[] = {"d5060101-a904-deb9-4748-2c7f4a124842",
-                                "d5060201-a904-deb9-4748-2c7f4a124842",
-                                "d5060401-a904-deb9-4748-2c7f4a124842"};
+static const char *MYO_UUID = "d5060001-a904-deb9-4748-2c7f4a124842";
+static const char *MYO_CHAR_UUIDS[] = {"d5060101-a904-deb9-4748-2c7f4a124842",
+                                        "d5060201-a904-deb9-4748-2c7f4a124842",
+                                        "d5060401-a904-deb9-4748-2c7f4a124842"};
 
-const char *IMU_UUID = "d5060002-a904-deb9-4748-2c7f4a124842";
-const char *IMU_CHAR_UUIDS[] = {"d5060402-a904-deb9-4748-2c7f4a124842",
-                                "d5060502-a904-deb9-4748-2c7f4a124842"};
+static const char *IMU_UUID = "d5060002-a904-deb9-4748-2c7f4a124842";
+static const char *IMU_CHAR_UUIDS[] = {"d5060402-a904-deb9-4748-2c7f4a124842",
+                                        "d5060502-a904-deb9-4748-2c7f4a124842"};
 
-const char *ARM_UUID = "d5060003-a904-deb9-4748-2c7f4a124842";
-const char *ARM_CHAR_UUIDS[] = {"d5060103-a904-deb9-4748-2c7f4a124842"};
+static const char *ARM_UUID = "d5060003-a904-deb9-4748-2c7f4a124842";
+static const char *ARM_CHAR_UUIDS[] = {"d5060103-a904-deb9-4748-2c7f4a124842"};
 
-const char *EMG_UUID = "d5060004-a904-deb9-4748-2c7f4a124842";
-const char *EMG_CHAR_UUIDS[] = {"d5060104-a904-deb9-4748-2c7f4a124842"};
+static const char *EMG_UUID = "d5060004-a904-deb9-4748-2c7f4a124842";
+static const char *EMG_CHAR_UUIDS[] = {"d5060104-a904-deb9-4748-2c7f4a124842"};
 
 enum MyoStatus {
     DISCONNECTED,
@@ -54,7 +54,7 @@ static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
 static GDBusProxy *myo;
 
-typedef struct GattService {
+static typedef struct GattService {
     const char *UUID;
     GDBusProxy *proxy;
     GDBusObjectManagerClient *gatt_manager;
@@ -73,6 +73,7 @@ static GattService services[NUM_SERVICES] = {
     {ARM_UUID, NULL, NULL, ARM_CHAR_UUIDS, NULL, 1},
     {EMG_UUID, NULL, NULL, EMG_CHAR_UUIDS, NULL, 1}
 };
+
 #define generic_access_service services[0]
 #define battery_service services[1]
 #define myo_control_service services[2]
@@ -85,6 +86,10 @@ static GattService services[NUM_SERVICES] = {
 #define imu_data imu_service.char_proxies[0]
 #define arm_data arm_service.char_proxies[0]
 #define emg_data emg_service.char_proxies[0]
+
+static gulong imu_sig_id;
+static gulong arm_sig_id;
+static gulong emg_sig_id;
 
 enum ArmDataType {
     WORN = 1,
@@ -104,14 +109,14 @@ enum ArmXDirection {
     X_TO_ELBOW,
 };
 
-int myo_connect();
-void myo_initialize();
+static int myo_connect();
+static void myo_initialize();
 
-void init_GattService(GattService *service) {
+static void init_GattService(GattService *service) {
     service->char_proxies = calloc(num_chars, sizeof(GDBusProxy*));
 }
 
-gint is_adapter(gconstpointer a, gconstpointer b) {
+static gint is_adapter(gconstpointer a, gconstpointer b) {
     GDBusInterface *interface;
     
     interface = g_dbus_object_get_interface((GDBusObject*) a,
@@ -124,7 +129,7 @@ gint is_adapter(gconstpointer a, gconstpointer b) {
     }
 }
 
-gint is_myo(gconstpointer a, gconstpointer b) {
+static gint is_myo(gconstpointer a, gconstpointer b) {
     GDBusProxy *proxy;
     GVariant *UUIDs_var;
     GVariantIter *iter;
@@ -157,7 +162,7 @@ gint is_myo(gconstpointer a, gconstpointer b) {
     return ret;
 }
 
-gint is_service(gconstpointer a, gconstpointer b) {
+static gint is_service(gconstpointer a, gconstpointer b) {
     GDBusInterface *interface;
     
     interface = g_dbus_object_get_interface((GDBusObject*) a,
@@ -170,7 +175,7 @@ gint is_service(gconstpointer a, gconstpointer b) {
     }
 }
 
-gint is_characteristic(gconstpointer a, gconstpointer b) {
+static gint is_characteristic(gconstpointer a, gconstpointer b) {
     GDBusInterface *interface;
     
     interface = g_dbus_object_get_interface((GDBusObject*) a,
@@ -183,7 +188,7 @@ gint is_characteristic(gconstpointer a, gconstpointer b) {
     }
 }
 
-void set_service(GDBusObject *object) {
+static void set_service(GDBusObject *object) {
     GVariant *UUID;
     const char *UUID_str;
     
@@ -218,7 +223,7 @@ void set_service(GDBusObject *object) {
     g_variant_unref(UUID);
 }
 
-void set_characteristic(GDBusObject *object) {
+static void set_characteristic(GDBusObject *object) {
     int i, j;
     GDBusProxy *service;
     GVariant *UUID, *serv_UUID, *path;
@@ -273,7 +278,7 @@ void set_characteristic(GDBusObject *object) {
     g_variant_unref(UUID);
 }
 
-void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                                                         gpointer user_data) {
     GVariantIter *iter;
     const gchar *key;
@@ -296,7 +301,7 @@ void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                                                         gpointer user_data) {
     GVariantIter *iter;
     const gchar *key, *vals;
@@ -319,7 +324,7 @@ void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                                                         gpointer user_data) {
     GVariantIter *iter;
     const gchar *key, *vals;
@@ -344,7 +349,7 @@ void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                                                         gpointer user_data) {
     GVariantIter *iter;
     const gchar *key, *vals;
@@ -370,8 +375,8 @@ void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-void interface_added_myo(GDBusObjectManager *manager, GDBusObject *object,
-                            GDBusInterface *interface, gpointer user_data) {
+static void interface_added_myo(GDBusObjectManager *manager,
+        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
     GVariant *reply;
     
     if(adapter != NULL && myo == NULL && is_myo(object, NULL)) {
@@ -386,21 +391,21 @@ void interface_added_myo(GDBusObjectManager *manager, GDBusObject *object,
     }
 }
 
-void interface_added_service(GDBusObjectManager *manager, GDBusObject *object,
-                            GDBusInterface *interface, gpointer user_data) {
+static void interface_added_service(GDBusObjectManager *manager,
+        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
     if(is_service(object, NULL)) {
         set_service(object);
     }
 }
 
-void interface_added_characteristic(GDBusObjectManager *manager,
+static void interface_added_characteristic(GDBusObjectManager *manager,
         GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
     if(is_characteristic(object, NULL)) {
         set_characteristic(object);
     }
 }
 
-int get_adapter() {
+static int get_adapter() {
     GList *objects;
     GList *object;
     
@@ -429,7 +434,7 @@ int get_adapter() {
     return 0;
 }
 
-int myo_scan() {
+static int myo_scan() {
     GList *objects;
     GList *object;
     
@@ -474,7 +479,7 @@ int myo_scan() {
     return 0;
 }
 
-int myo_connect(GDBusObject *object) {
+static int myo_connect(GDBusObject *object) {
     GList *objects;
     GList *object;
     
@@ -536,8 +541,12 @@ int myo_connect(GDBusObject *object) {
 }
 
 int myo_get_name(char *str) {
-    //get name of myo from generic access and return length
-    //TODO: get name
+    GVariant *name;
+    int length;
+    name = g_dbus_proxy_get_cached_property((GDBusProxy*) object, "Alias");
+    str = g_variant_dup_string(name, &length);
+    g_variant_unref(name);
+    return length;
 }
 
 void myo_get_version(char *ver) {
@@ -564,6 +573,8 @@ void myo_EMG_notify_enable(bool enable){
     g_dbus_proxy_call_sync(emg_data, enable ? "StartNotify" : "StopNotify",
                                 NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     ASSERT(error, "EMG notify enable/disable failed");
+    
+    emg_sig_id = g_signal_connect(myo, "g-properties-changed", G_CALLBACK(myo_emg_cb), NULL);
 }
 
 void myo_IMU_notify_enable(bool enable){
@@ -574,6 +585,8 @@ void myo_IMU_notify_enable(bool enable){
     g_dbus_proxy_call_sync(imu_data, enable ? "StartNotify" : "StopNotify",
                                 NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     ASSERT(error, "IMU notify enable/disable failed");
+    
+    imu_sig_id = g_signal_connect(myo, "g-properties-changed", G_CALLBACK(myo_imu_cb), NULL);
 }
 
 void myo_arm_indicate_enable(bool enable) {
@@ -581,9 +594,22 @@ void myo_arm_indicate_enable(bool enable) {
         return;
     }
     //call start notify or stop notify
-    g_dbus_proxy_call_sync(arm_data, enable ? "StartNotify" : "StopNotify",
-                                NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-    ASSERT(error, "Arm notify enable/disable failed");
+    if(enable) {
+        g_dbus_proxy_call_sync(arm_data, "StartNotify", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+        ASSERT(error, "Arm notify enable failed");
+        if(arm_sig_id == 0) {
+            arm_sig_id = g_signal_connect(arm_data, "g-properties-changed",
+                                                G_CALLBACK(myo_arm_cb), NULL);
+        }
+    } else {
+        g_dbus_proxy_call_sync(arm_data, "StopNotify", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+        ASSERT(error, "Arm notify disable failed");
+        if(arm_sig_id != 0) {
+            g_signal_handler_disconnect(arm_data, arm_sig_id);
+        }
+    }
 }
 
 void myo_update_enable(bool emg, bool imu, bool arm) {
@@ -591,18 +617,19 @@ void myo_update_enable(bool emg, bool imu, bool arm) {
     unsigned char data[] = {0x01, 0x03, emg ? 0x01 : 0x00,
                                         imu ? 0x01 : 0x00,
                                         arm ? 0x01 : 0x00};
-    //TODO:create variant
     
-    g_dbus_proxy_call_sync(cmd_input, "WriteValue", data_var,
-                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    g_dbus_proxy_call_sync(cmd_input, "WriteValue",
+                    g_variant_new_fixed_array(
+                        G_VARIANT_TYPE_BYTE, data, 5, sizeof(unsigned char)),
+                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 }
 
-void myo_initialize() {
+static void myo_initialize() {
     unsigned char version[4];
     char name[25];
     
-    unsigned short C;
-    unsigned char emg_hz, emg_smooth, imu_hz;
+    //unsigned short C;
+    //unsigned char emg_hz, emg_smooth, imu_hz;
     
     printf("Initializing...\n");
     
@@ -675,7 +702,7 @@ void myo_initialize() {
     printf("Initialized!\n");
 }
 
-void stop_myo(int sig) {
+static void stop_myo(int sig) {
     int i, j;
     GVariant *reply;
     
