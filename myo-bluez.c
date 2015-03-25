@@ -279,6 +279,17 @@ static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
+static void on_imu(short *quat, short *acc, short *gyro) {
+    printf("On_IMU:\n"
+            "Quat - X: %d | Y: %d | Z: %d | W: %d\n"
+            "Acc - X: %d | Y: %d | Z: %d\n"
+            "Gyro - X: %d | Y: %d | Z: %d\n"
+            "--------------------------------------\n",
+            quat[0], quat[1], quat[2], quat[3],
+            acc[0], acc[1], acc[2],
+            gyro[0], gyro[1], gyro[2]);
+}
+
 static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                                                         gpointer user_data) {
     GVariantIter *iter;
@@ -300,6 +311,20 @@ static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
         }
         g_variant_iter_free (iter);
     }
+}
+
+static void on_arm(ArmSide side, ArmXDirection dir) {
+    printf("On_Arm:\n"
+            "Side: %s | XDirection: %s\n"
+            "--------------------------------------\n",
+            side2str(side), dir2str(dir));
+}
+
+static void on_pose(libmyo_pose_t pose) {
+    printf("On_Pose:\n"
+            "Pose: %s\n"
+            "--------------------------------------\n",
+            pose2str(pose));
 }
 
 static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
@@ -325,6 +350,19 @@ static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
         }
         g_variant_iter_free (iter);
     }
+}
+
+static void on_emg(short *emg, unsigned char moving) {
+    printf("On_EMG:\n"
+            "EMG 1: %u | EMG 2: %u\n"
+            "EMG 3: %u | EMG 4: %u\n"
+            "EMG 5: %u | EMG 6: %u\n"
+            "EMG 7: %u | EMG 8: %u\n"
+            "Moving: %u\n"
+            "--------------------------------------\n",
+            emg[0], emg[1], emg[2], emg[3],
+            emg[4], emg[5], emg[6], emg[7],
+            moving);
 }
 
 static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
@@ -745,6 +783,7 @@ int main(void) {
     
     if(get_adapter()) {
         //error
+        return 1;
     }
     
     //scan for Myo
