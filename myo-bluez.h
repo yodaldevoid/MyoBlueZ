@@ -1,33 +1,30 @@
-#ifndef MYO-BLUEZ_H_
-#define MYO-BLUEZ_H_
+#ifndef MYO_BLUEZ_H
+#define MYO_BLUEZ_H 
 
 #include <stdbool.h>
 
-#include <glib.h>
-#include <gio/gio.h>
-
-enum MyoStatus {
+typedef enum {
     DISCONNECTED,
     CONNECTED
-};
+} MyoStatus;
 
-enum ArmDataType {
+typedef enum {
     WORN = 1,
     REMOVED,
     POSE,
-};
+} ArmDataType;
 
-enum ArmSide {
+typedef enum {
     NONE,
     RIGHT,
     LEFT,
-};
+} ArmSide;
 
-enum ArmXDirection {
+typedef enum {
     UNKNOWN,
     X_TO_WRIST,
     X_TO_ELBOW,
-};
+} ArmXDirection;
 
 int myo_get_name(char *str);
 void myo_get_version(char *ver);
