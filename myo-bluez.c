@@ -11,7 +11,6 @@
 
 #define ASSERT(GERR, MSG) \
     if(GERR != NULL) { \
-        g_assert(GERR); \
         fprintf(stderr, "%s: %s\n", MSG, GERR->message); \
         g_error_free(GERR); \
         GERR = NULL; \
@@ -45,7 +44,6 @@ static GMainLoop *loop;
 
 static int new;
 static gulong myo_conn_id;
-static gulong service_conn_id;
 
 static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
@@ -83,10 +81,14 @@ static gulong imu_sig_id;
 static gulong arm_sig_id;
 static gulong emg_sig_id;
 
+static void set_characteristic(const gchar *path);
+static void set_service(const gchar *path);
+static void set_myo(const gchar *path);
 static void interface_added_characteristic(GDBusObjectManager *manager,
         GDBusObject *object, GDBusInterface *interface, gpointer user_data);
 static void interface_added_service(GDBusObjectManager *manager,
         GDBusObject *object, GDBusInterface *interface, gpointer user_data);
+static void stop_myo(int sig);
 
 static void init_GattService(GattService *service, const char *UUID,
                                     const char **char_UUIDs, int num_chars) {
@@ -109,37 +111,17 @@ static gint is_adapter(gconstpointer a, gconstpointer b) {
     }
 }
 
-static gint is_myo(gconstpointer a, gconstpointer b) {
-    GDBusProxy *proxy;
-    GVariant *UUIDs_var;
-    GVariantIter *iter;
-    const gchar *uuid;
+static gint is_device(gconstpointer a, gconstpointer b) {
+    GDBusInterface *interface;
     
-    gint ret;
-    
-    ret = 1;
-    
-    proxy = (GDBusProxy*) g_dbus_object_get_interface((GDBusObject*) a,
+    interface = g_dbus_object_get_interface((GDBusObject*) a,
                                                         "org.bluez.Device1");
-    if(proxy != NULL) {
-        UUIDs_var = g_dbus_proxy_get_cached_property(proxy, "UUIDs");
-        if(UUIDs_var != NULL) {
-            g_variant_get(UUIDs_var, "as", &iter);
-            while(g_variant_iter_loop(iter, "s", &uuid)) {
-                if(strcmp(uuid, MYO_UUID) == 0) {
-                    ret = 0;
-                    break;
-                }
-            }
-            
-            g_variant_iter_free (iter);
-        }
-        
-        g_variant_unref(UUIDs_var);
-        g_object_unref(proxy);
+    if(NULL == interface) {
+        return 1;
+    } else {
+        g_object_unref(interface);
+        return 0;
     }
-    
-    return ret;
 }
 
 static gint is_service(gconstpointer a, gconstpointer b) {
@@ -168,39 +150,65 @@ static gint is_characteristic(gconstpointer a, gconstpointer b) {
     }
 }
 
-static void set_characteristic(GDBusObject *object) {
+static void modified_characteristic_cb(GDBusProxy *proxy, GVariant *changed,
+                                            GStrv invalid, gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key;
+    GVariant *value;
+    
+    //check if UUID was set
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            if(strcmp(key, "UUID") == 0) {
+                //if UUID set kill notifier and call set_service
+                g_signal_handler_disconnect(proxy, *((gulong*) user_data));
+                free(user_data);
+                set_characteristic(g_dbus_proxy_get_object_path(proxy));
+                break;
+            }
+        }
+        g_variant_iter_free(iter);
+    }
+}
+
+static void set_characteristic(const gchar *path) {
+    gulong *sig_id;
     int i, j;
     GDBusProxy *service, *proxy;
-    GVariant *UUID, *serv_UUID, *path;
+    GVariant *UUID, *serv_UUID, *serv_path;
     const char *UUID_str, *serv_UUID_str;
     
     printf("Set char\n");
     
-    proxy = g_dbus_proxy_new_for_bus_sync(
-                            G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL,
-                            "org.bluez", g_dbus_object_get_object_path(object),
+    proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                            G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", path,
                             "org.bluez.GattCharacteristic1", NULL, &error);
     ASSERT(error, "Get characteristic failed");
     
     //check UUIDs for which service
     //get UUID
-    UUID = g_dbus_proxy_get_cached_property((GDBusProxy*) object, "UUID");
+    UUID = g_dbus_proxy_get_cached_property(proxy, "UUID");
     if(UUID == NULL) {
+        //UUID not set yet
+        //set notifier
+        sig_id = (gulong*) malloc(sizeof(gulong));
+        *sig_id = g_signal_connect(proxy, "g-properties-changed",
+                                G_CALLBACK(modified_characteristic_cb), sig_id);
+        g_object_unref(proxy);
         return;
     }
     UUID_str = g_variant_get_string(UUID, NULL);
     
-    printf("Char: %s\n", UUID_str);
-    
     //get service object path
-    path = g_dbus_proxy_get_cached_property((GDBusProxy*) object, "Service");
+    serv_path = g_dbus_proxy_get_cached_property(proxy, "Service");
     if(path == NULL) {
         return;
     }
     
     service = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
                                     G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
-                                    g_variant_get_string(path, NULL),
+                                    g_variant_get_string(serv_path, NULL),
                                     "org.bluez.GattService1", NULL, &error);
     ASSERT(error, "Get service for characteristic failed");
     
@@ -237,9 +245,38 @@ static void set_characteristic(GDBusObject *object) {
     g_variant_unref(serv_UUID);
     g_variant_unref(UUID);
     g_object_unref(proxy);
+    return;
 }
 
-static void set_service(GDBusObject *object) {
+static void modified_service_cb(GDBusProxy *proxy, GVariant *changed,
+                                            GStrv invalid, gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key;
+    GVariant *value;
+    
+    printf("Modified service\n");
+    
+    //check if UUID was set
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            printf("Checking UUID\n");
+            if(strcmp(key, "UUID") == 0) {
+                printf("UUID set\n");
+                //if UUID set kill notifier and call set_service
+                g_signal_handler_disconnect(proxy, *((gulong*) user_data));
+                free(user_data);
+                set_service(g_dbus_proxy_get_object_path(proxy));
+                break;
+            }
+        }
+        g_variant_iter_free(iter);
+    }
+}
+
+//TODO: call myo_initialize when all services found
+static void set_service(const gchar *path) {
+    gulong *sig_id;
     int i;
     GDBusProxy *proxy;
     GVariant *UUID;
@@ -250,17 +287,20 @@ static void set_service(GDBusObject *object) {
     //check UUIDs for which service
     //get UUID
     proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", g_dbus_object_get_object_path(object),
+                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", path,
                     "org.bluez.GATTService1", NULL, &error);
     ASSERT(error, "Get service proxy failed");
     UUID = g_dbus_proxy_get_cached_property(proxy, "UUID");
     if(UUID == NULL) {
-        printf("Set service failed\n");
+        //UUID not set yet
+        //set notifier
+        printf("UUID not set\n");
+        sig_id = (gulong*) malloc(sizeof(gulong));
+        *sig_id = g_signal_connect(proxy, "g-properties-changed",
+                                    G_CALLBACK(modified_service_cb), sig_id);
         return;
     }
     UUID_str = g_variant_get_string(UUID, NULL);
-    
-    printf("Service: %s\n", UUID_str);
     
     for(i = 0; i < NUM_SERVICES; i++) {
         if(strcmp(UUID_str, services[i].UUID) == 0) {
@@ -270,12 +310,12 @@ static void set_service(GDBusObject *object) {
             services[i].gatt_manager = (GDBusObjectManagerClient*)
                 g_dbus_object_manager_client_new_for_bus_sync(
                     G_BUS_TYPE_SYSTEM, G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
-                    "org.bluez", g_dbus_object_get_object_path(object), NULL, 
+                    "org.bluez", path, NULL, 
                     NULL, NULL, NULL, &error);
             ASSERT(error, "Get gatt manager failed");
             
             g_signal_connect(services[i].gatt_manager, "interface-added",
-                                G_CALLBACK(interface_added_characteristic), NULL);
+                            G_CALLBACK(interface_added_characteristic), NULL);
             g_variant_unref(UUID);
             return;
         }
@@ -284,35 +324,140 @@ static void set_service(GDBusObject *object) {
     //proxy was not set
     g_variant_unref(UUID);
     g_object_unref(proxy);
+    return;
 }
 
-static int set_myo(GDBusObject *object) {
+static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
+                                                        gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key;
+    GVariant *value, *reply;
+    
+    //check if property was "connected"
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            if(strcmp(key, "Connected") == 0) {
+                if(!g_variant_get_boolean(value)) {
+                    //disconnected
+                    printf("Myo disconnected\n");
+                    reply = g_dbus_proxy_call_sync(myo, "Disconnect", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                    ASSERT(error, "Disconnect failed");
+                    g_variant_unref(reply);
+                    status = DISCONNECTED;
+                    
+                    printf("Connecting...\n");
+                    reply = g_dbus_proxy_call_sync(myo, "Connect", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                    if(error != NULL) {
+                        g_assert(error);
+                        fprintf(stderr, "%s: %s\n", "Connection failed",
+                                                                error->message);
+                        g_error_free(error);
+                        error = NULL;
+                        stop_myo(0);
+                    }
+                    g_variant_unref(reply);
+                    
+                    status = CONNECTED;
+                    printf("Connected!\n");
+                }
+            }
+        }
+        g_variant_iter_free(iter);
+    }
+}
+
+static void modified_device_cb(GDBusProxy *proxy, GVariant *changed,
+                                            GStrv invalid, gpointer user_data) {
+    GVariantIter *iter;
+    const gchar *key;
+    GVariant *value;
+    
+    //check if UUIDs was set
+    if(g_variant_n_children(changed) > 0) {
+        g_variant_get(changed, "a{sv}", &iter);
+        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
+            if(strcmp(key, "UUIDs") == 0) {
+                //if UUIDs set kill notifier and call set_service
+                //TODO: might cause problems if not all UUIDs are set at once
+                g_signal_handler_disconnect(proxy, *((gulong*) user_data));
+                free(user_data);
+                set_myo(g_dbus_proxy_get_object_path(proxy));
+                break;
+            }
+        }
+        g_variant_iter_free(iter);
+    }
+}
+
+static void set_myo(const gchar *path) {
+    gulong *sig_id;
+    
+    GDBusProxy *proxy;
+    GVariant *UUIDs, *reply;
+    GVariantIter *iter;
+    gchar *uuid;
+    
     GList *objects;
-    GList *_object;
-    
-    GVariant *reply;
-    
-    printf("Myo found!\n");
+    GList *service;
     
     //get path from proxy
-    myo = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+    proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
                                 G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
-                                g_dbus_object_get_object_path(object),
-                                "org.bluez.Device1", NULL, &error);
+                                path, "org.bluez.Device1", NULL, &error);
     ASSERT(error, "Get Myo Proxy failed");
-    if(myo == NULL) {
-        return 1;
+    //get UUIDs
+    //if cannot get UUIDs set notify
+    UUIDs = g_dbus_proxy_get_cached_property(proxy, "UUIDs");
+    if(UUIDs == NULL || (g_variant_n_children(UUIDs) == 0)) {
+        //UUID not set yet
+        //set notifier
+        if(UUIDs != NULL) {
+            g_variant_unref(UUIDs);
+        }
+        sig_id = (gulong*) malloc(sizeof(gulong));
+        *sig_id = g_signal_connect(proxy, "g-properties-changed",
+                                    G_CALLBACK(modified_device_cb), sig_id);
+        return;
     }
+    
+    g_variant_get(UUIDs, "as", &iter);
+    while(g_variant_iter_loop(iter, "&s", &uuid)) {
+        if(strcmp(uuid, MYO_UUID) == 0) {
+            if(myo_conn_id) {
+                reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL,
+                            G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                ASSERT(error, "StopDiscovery failed");
+                g_variant_unref(reply);
+                g_signal_handler_disconnect(bluez_manager, myo_conn_id);
+                myo_conn_id = 0;
+            }
+            myo = proxy;
+            break;
+        }
+    }
+    g_variant_iter_free(iter);
+    g_variant_unref(UUIDs);
+    
+    if(myo == NULL) {
+        g_object_unref(proxy);
+        return;
+    }
+    
+    printf("Myo found!\n");
     
     printf("Connecting...\n");
     reply = g_dbus_proxy_call_sync(myo, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE,
                                                             -1, NULL, &error);
     if(error != NULL) {
+        //TODO: retry connection
         g_assert(error);
         fprintf(stderr, "%s: %s\n", "Connection failed", error->message);
         g_error_free(error);
         error = NULL;
-        return 1;
+        return;
     }
     g_variant_unref(reply);
     
@@ -333,66 +478,21 @@ static int set_myo(GDBusObject *object) {
     if(NULL == objects) {
         //failed
         fprintf (stderr, "Manger did not give us objects!\n");
-        return 1;
+        return;
     }
     
     do {
-        _object = g_list_find_custom(objects, NULL, is_service);
-        if(_object == NULL) {
+        service = g_list_find_custom(objects, NULL, is_service);
+        if(service == NULL) {
             break;
         }
-        set_service(_object->data);
-        objects = g_list_delete_link(objects, _object);
-    } while(object != NULL);
+        set_service(service->data);
+        objects = g_list_delete_link(objects, service);
+    } while(service != NULL);
     
     g_list_free_full(objects, g_object_unref);
     
-    myo_initialize();
-    
-    return 0;
-}
-
-static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
-                                                        gpointer user_data) {
-    GVariantIter *iter;
-    const gchar *key;
-    GVariant *value;
-    
-    //check if peroperty was "connected"
-    if(g_variant_n_children(changed) > 0) {
-        g_variant_get(changed, "a{sv}", &iter);
-        while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
-            if(strcmp(key, "Connected") == 0) {
-                if(!g_variant_get_boolean(value)) {
-                    //disconnected
-                    status = DISCONNECTED;
-                    printf("Myo disconnected\n");
-                    reply = g_dbus_proxy_call_sync(myo, "Disconnect", NULL,
-                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-                    ASSERT(error, "Disconnect failed");
-                    g_variant_unref(reply);
-                    
-                    printf("Connecting...\n");
-                    reply = g_dbus_proxy_call_sync(myo, "Connect", NULL,
-                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-                    if(error != NULL) {
-                        g_assert(error);
-                        fprintf(stderr, "%s: %s\n", "Connection failed",
-                                                                error->message);
-                        g_error_free(error);
-                        error = NULL;
-                        g_variant_iter_free(iter);
-                        stop_myo();
-                    }
-                    g_variant_unref(reply);
-                    
-                    status = CONNECTED;
-                    printf("Connected!\n");
-                }
-            }
-        }
-        g_variant_iter_free(iter);
-    }
+    return;
 }
 
 static void on_imu(short *quat, short *acc, short *gyro) {
@@ -507,33 +607,24 @@ static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-static void interface_added_myo(GDBusObjectManager *manager,
+static void interface_added_device(GDBusObjectManager *manager,
         GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
-    GVariant *reply;
-    
-    if(adapter != NULL && myo == NULL && is_myo(object, NULL)) {
-        reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL,
-                                G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-        ASSERT(error, "StopDiscovery failed");
-        g_variant_unref(reply);
-        
-        g_signal_handler_disconnect(bluez_manager, myo_conn_id);
-        
-        set_myo(object);
+    if(is_device(object, NULL)) {
+        set_myo(g_dbus_object_get_object_path(object));
     }
 }
 
 static void interface_added_service(GDBusObjectManager *manager,
         GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
     if(is_service(object, NULL)) {
-        set_service(object);
+        set_service(g_dbus_object_get_object_path(object));
     }
 }
 
 static void interface_added_characteristic(GDBusObjectManager *manager,
         GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
     if(is_characteristic(object, NULL)) {
-        set_characteristic(object);
+        set_characteristic(g_dbus_object_get_object_path(object));
     }
 }
 
@@ -780,13 +871,20 @@ static int myo_scan() {
     
     if(myo == NULL) {
         //check to make sure Myo has not already been found
-        object = g_list_find_custom(objects, NULL, is_myo);
-        if(NULL != object) {
+        printf("Searching objects for myo\n");
+        do {
+            object = g_list_find_custom(objects, NULL, is_device);
+            if(object == NULL) {
+                printf("Finished searching objects for myo\n");
+                break;
+            }
             //Myo has been found so we don't have to scan for it
             //TODO: might be a problem if there are multiple Myos and this one
             //cannot be connected to
-            myo_connect((GDBusObject*) object->data);
-        }
+            set_myo(g_dbus_object_get_object_path((GDBusObject*) object->data));
+            objects = g_list_delete_link(objects, object);
+        } while(object != NULL);
+        
         
         //connecting to myo failed or myo not found, so go searching
         if(myo == NULL) {
@@ -794,7 +892,7 @@ static int myo_scan() {
             printf("Discovery started\n");
             
             myo_conn_id = g_signal_connect(bluez_manager, "interface-added",
-                                        G_CALLBACK(interface_added_myo), NULL);
+                                    G_CALLBACK(interface_added_device), NULL);
             
             reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
@@ -818,10 +916,20 @@ static void stop_myo(int sig) {
             //disconnect
             reply = g_dbus_proxy_call_sync(myo, "Disconnect", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+            ASSERT(error, "Disconnect failed");
             g_variant_unref(reply);
         }
         g_object_unref(myo);
         myo = NULL;
+    } else {
+        if(myo_conn_id) {
+            reply = g_dbus_proxy_call_sync(adapter, "StopDiscovery", NULL,
+                        G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+            ASSERT(error, "StopDiscovery failed");
+            g_variant_unref(reply);
+            g_signal_handler_disconnect(bluez_manager, myo_conn_id);
+            myo_conn_id = 0;
+        }
     }
     if(adapter != NULL) {
         g_object_unref(adapter);
