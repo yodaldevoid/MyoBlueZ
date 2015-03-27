@@ -181,10 +181,12 @@ static void set_characteristic(const gchar *path) {
     
     printf("Set char\n");
     
-    proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                            G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", path,
-                            "org.bluez.GattCharacteristic1", NULL, &error);
-    ASSERT(error, "Get characteristic failed");
+    proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
+                                        (GDBusObjectManager*) bluez_manager,
+                                        path, "org.bluez.GattCharacteristic1");
+    if(proxy == NULL) {
+        fprintf(stderr, "Get characteristic proxy failed\n");
+    }
     
     //check UUIDs for which service
     //get UUID
@@ -206,11 +208,13 @@ static void set_characteristic(const gchar *path) {
         return;
     }
     
-    service = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
-                                    g_variant_get_string(serv_path, NULL),
-                                    "org.bluez.GattService1", NULL, &error);
-    ASSERT(error, "Get service for characteristic failed");
+    service = (GDBusProxy*) g_dbus_object_manager_get_interface(
+                                        (GDBusObjectManager*) bluez_manager,
+                                        g_variant_get_string(serv_path, NULL),
+                                        "org.bluez.GattService1");
+    if(service == NULL) {
+        fprintf(stderr, "Get service for characteristic failed\n");
+    }
     
     //get service UUID string
     serv_UUID = g_dbus_proxy_get_cached_property(service, "UUID");
@@ -286,10 +290,12 @@ static void set_service(const gchar *path) {
     
     //check UUIDs for which service
     //get UUID
-    proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", path,
-                    "org.bluez.GATTService1", NULL, &error);
-    ASSERT(error, "Get service proxy failed");
+    proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
+                                            (GDBusObjectManager*) bluez_manager,
+                                            path, "org.bluez.GATTService1");
+    if(proxy == NULL) {
+        fprintf(stderr, "Get service proxy failed\n");
+    }
     UUID = g_dbus_proxy_get_cached_property(proxy, "UUID");
     if(UUID == NULL) {
         //UUID not set yet
@@ -404,10 +410,12 @@ static void set_myo(const gchar *path) {
     GList *service;
     
     //get path from proxy
-    proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                                G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
-                                path, "org.bluez.Device1", NULL, &error);
-    ASSERT(error, "Get Myo Proxy failed");
+    proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
+                                            (GDBusObjectManager*) bluez_manager,
+                                            path, "org.bluez.Device1");
+    if(proxy == NULL) {
+        fprintf(stderr, "Get Myo proxy failed\n");
+    }
     //get UUIDs
     //if cannot get UUIDs set notify
     UUIDs = g_dbus_proxy_get_cached_property(proxy, "UUIDs");
@@ -493,6 +501,27 @@ static void set_myo(const gchar *path) {
     g_list_free_full(objects, g_object_unref);
     
     return;
+}
+
+static void interface_added_device(GDBusObjectManager *manager,
+        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
+    if(is_device(object, NULL)) {
+        set_myo(g_dbus_object_get_object_path(object));
+    }
+}
+
+static void interface_added_service(GDBusObjectManager *manager,
+        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
+    if(is_service(object, NULL)) {
+        set_service(g_dbus_object_get_object_path(object));
+    }
+}
+
+static void interface_added_characteristic(GDBusObjectManager *manager,
+        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
+    if(is_characteristic(object, NULL)) {
+        set_characteristic(g_dbus_object_get_object_path(object));
+    }
 }
 
 static void on_imu(short *quat, short *acc, short *gyro) {
@@ -607,27 +636,6 @@ static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
     }
 }
 
-static void interface_added_device(GDBusObjectManager *manager,
-        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
-    if(is_device(object, NULL)) {
-        set_myo(g_dbus_object_get_object_path(object));
-    }
-}
-
-static void interface_added_service(GDBusObjectManager *manager,
-        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
-    if(is_service(object, NULL)) {
-        set_service(g_dbus_object_get_object_path(object));
-    }
-}
-
-static void interface_added_characteristic(GDBusObjectManager *manager,
-        GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
-    if(is_characteristic(object, NULL)) {
-        set_characteristic(g_dbus_object_get_object_path(object));
-    }
-}
-
 static int get_adapter() {
     GList *objects;
     GList *object;
@@ -646,11 +654,13 @@ static int get_adapter() {
         return 1;
     }
     
-    adapter = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
-                    G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+    adapter = (GDBusProxy*) g_dbus_object_manager_get_interface(
+                    (GDBusObjectManager*) bluez_manager,
                     g_dbus_object_get_object_path((GDBusObject*) object->data),
-                    "org.bluez.Adapter1", NULL, &error);
-    ASSERT(error, "Get Proxy for Adapter failed");
+                    "org.bluez.Adapter1");
+    if(adapter == NULL) {
+        fprintf(stderr, "Get Proxy for Adapter failed\n");
+    }
     
     g_list_free_full(objects, g_object_unref);
     
