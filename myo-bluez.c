@@ -15,11 +15,6 @@
         g_error_free(GERR); \
         GERR = NULL; \
     }
-    
-static const char *GAP_UUID = "00001800-0000-1000-8000-00805f9b34fb";
-static const char *GAP_CHAR_UUIDS[] = {"00002a00-0000-1000-8000-00805f9b34fb",
-                                        "00002a01-0000-1000-8000-00805f9b34fb",
-                                        "00002a04-0000-1000-8000-00805f9b34fb"};
 
 static const char *BATT_UUID = "0000180f-0000-1000-8000-00805f9b34fb";
 static const char *BATT_CHAR_UUIDS[] = {"00002a19-0000-1000-8000-00805f9b34fb"};
@@ -61,15 +56,14 @@ typedef struct {
 } GattService;
 
 //TODO: add unknown services
-#define NUM_SERVICES 6
+#define NUM_SERVICES 5
 static GattService services[NUM_SERVICES];
 
-#define generic_access_service services[0]
-#define battery_service services[1]
-#define myo_control_service services[2]
-#define imu_service services[3]
-#define arm_service services[4]
-#define emg_service services[5]
+#define battery_service services[0]
+#define myo_control_service services[1]
+#define imu_service services[2]
+#define arm_service services[3]
+#define emg_service services[4]
 
 #define version_data myo_control_service.char_proxies[1]
 #define cmd_input myo_control_service.char_proxies[2]
@@ -181,9 +175,10 @@ static void set_characteristic(const gchar *path) {
     
     printf("Set char\n");
     
-    proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
-                                        (GDBusObjectManager*) bluez_manager,
-                                        path, "org.bluez.GattCharacteristic1");
+    proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                            G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", path,
+                            "org.bluez.GATTCharacteristic1", NULL, &error);
+    ASSERT(error, "Get characteristic proxy failed");
     if(proxy == NULL) {
         fprintf(stderr, "Get characteristic proxy failed\n");
     }
@@ -208,10 +203,17 @@ static void set_characteristic(const gchar *path) {
         return;
     }
     
+    /*
     service = (GDBusProxy*) g_dbus_object_manager_get_interface(
                                         (GDBusObjectManager*) bluez_manager,
                                         g_variant_get_string(serv_path, NULL),
                                         "org.bluez.GattService1");
+    */
+    service = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                            G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+                            g_variant_get_string(serv_path, NULL),
+                            "org.bluez.GATTService1", NULL, &error);
+    ASSERT(error, "Get service for characteristic failed");
     if(service == NULL) {
         fprintf(stderr, "Get service for characteristic failed\n");
     }
@@ -265,6 +267,7 @@ static void modified_service_cb(GDBusProxy *proxy, GVariant *changed,
         g_variant_get(changed, "a{sv}", &iter);
         while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
             printf("Checking UUID\n");
+            printf("Key: %s\n", key);
             if(strcmp(key, "UUID") == 0) {
                 printf("UUID set\n");
                 //if UUID set kill notifier and call set_service
@@ -285,17 +288,37 @@ static void set_service(const gchar *path) {
     GDBusProxy *proxy;
     GVariant *UUID;
     const char *UUID_str;
+    gchar **names;
     
     printf("Set service\n");
     
-    //check UUIDs for which service
-    //get UUID
+    //Don't know why this does not work. This manager gives the signal after all
+    /*
     proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
                                             (GDBusObjectManager*) bluez_manager,
                                             path, "org.bluez.GATTService1");
+    */
+    proxy = g_dbus_proxy_new_for_bus_sync(G_BUS_TYPE_SYSTEM,
+                            G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", path,
+                            "org.bluez.GATTService1", NULL, &error);
+    ASSERT(error, "Get service proxy failed");
     if(proxy == NULL) {
         fprintf(stderr, "Get service proxy failed\n");
+        return;
     }
+    
+    printf("Properties:\n");
+    
+    names = g_dbus_proxy_get_cached_property_names(proxy);
+    i = 0;
+    if(names == NULL) {
+        printf("names is empty\n");
+    } else {
+        while(names[i] != NULL) {
+            printf("%s\n", names[i++]);
+        }
+    }
+    
     UUID = g_dbus_proxy_get_cached_property(proxy, "UUID");
     if(UUID == NULL) {
         //UUID not set yet
@@ -870,7 +893,6 @@ static int myo_scan() {
     
     GVariant *reply;
     
-    //get adapter
     objects = g_dbus_object_manager_get_objects(
                                         (GDBusObjectManager*) bluez_manager);
     if(NULL == objects) {
@@ -904,6 +926,7 @@ static int myo_scan() {
             myo_conn_id = g_signal_connect(bluez_manager, "interface-added",
                                     G_CALLBACK(interface_added_device), NULL);
             
+            //TODO: check for not ready and restart if so
             reply = g_dbus_proxy_call_sync(adapter, "StartDiscovery", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
             ASSERT(error, "StartDiscovery failed");
@@ -929,6 +952,7 @@ static void stop_myo(int sig) {
             ASSERT(error, "Disconnect failed");
             g_variant_unref(reply);
         }
+        //TODO: maybe remove device to work around bluez bug
         g_object_unref(myo);
         myo = NULL;
     } else {
@@ -974,7 +998,6 @@ static void stop_myo(int sig) {
 int main(void) {
     signal(SIGINT, stop_myo);
     
-    init_GattService(&generic_access_service, GAP_UUID, GAP_CHAR_UUIDS, 3);
     init_GattService(&battery_service, BATT_UUID, BATT_CHAR_UUIDS, 1);
     init_GattService(&myo_control_service, MYO_UUID, MYO_CHAR_UUIDS, 3);
     init_GattService(&imu_service, IMU_UUID, IMU_CHAR_UUIDS, 2);
