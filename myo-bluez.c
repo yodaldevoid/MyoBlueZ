@@ -377,16 +377,11 @@ static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
                     status = DISCONNECTED;
                     
                     printf("Connecting...\n");
-                    reply = g_dbus_proxy_call_sync(myo, "Connect", NULL,
+                    do {
+                        reply = g_dbus_proxy_call_sync(myo, "Connect", NULL,
                                     G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-                    if(error != NULL) {
-                        g_assert(error);
-                        fprintf(stderr, "%s: %s\n", "Connection failed",
-                                                                error->message);
-                        g_error_free(error);
-                        error = NULL;
-                        stop_myo(0);
-                    }
+                        ASSERT(error, "Connection failed");
+                    } while(reply == NULL);
                     g_variant_unref(reply);
                     
                     status = CONNECTED;
@@ -480,16 +475,11 @@ static void set_myo(const gchar *path) {
     printf("Myo found!\n");
     
     printf("Connecting...\n");
-    reply = g_dbus_proxy_call_sync(myo, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE,
-                                                            -1, NULL, &error);
-    if(error != NULL) {
-        //TODO: retry connection
-        g_assert(error);
-        fprintf(stderr, "%s: %s\n", "Connection failed", error->message);
-        g_error_free(error);
-        error = NULL;
-        return;
-    }
+    do {
+        reply = g_dbus_proxy_call_sync(myo, "Connect", NULL,
+                                    G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+        ASSERT(error, "Connection failed");
+    } while(reply == NULL);
     g_variant_unref(reply);
     
     //set watcher for disconnect
