@@ -1,0 +1,3 @@
+[submodule "include/myo-bluetooth"]
+	path = include/myo-bluetooth
+	url = https://github.com/thalmiclabs/myo-bluetooth.git
