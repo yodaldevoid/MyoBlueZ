@@ -8,6 +8,7 @@
 #include <gio/gio.h>
 
 #include "myo-bluez.h"
+#include "myo-bluetooth/myohw.h"
 
 #define ASSERT(GERR, MSG) \
 	if(GERR != NULL) { \
