@@ -854,8 +854,22 @@ static void stop_myo(int sig) {
 	int i, j;
 	GVariant *reply;
 
+	for(i = 0; i < NUM_SERVICES; i++) {
+		for(j = 0; j < services[i].num_chars; j++) {
+			if(G_IS_OBJECT(services[i].char_proxies[j])) {
+				g_object_unref(services[i].char_proxies[j]);
+				services[i].char_proxies[j] = NULL;
+			}
+		}
+		if(G_IS_OBJECT(services[i].proxy)) {
+			printf("Freeing service proxy\n");
+			g_object_unref(services[i].proxy);
+			services[i].proxy = NULL;
+		}
+	}
+
 	//unref stuff
-	if(myo != NULL) {
+	if(G_IS_OBJECT(myo)) {
 		if(status == CONNECTED) {
 			//disconnect
 			reply = g_dbus_proxy_call_sync(
@@ -879,24 +893,15 @@ static void stop_myo(int sig) {
 		g_signal_handler_disconnect(bluez_manager, cb_id);
 		cb_id = 0;
 	}
-	if(adapter != NULL) {
+	
+	if(G_IS_OBJECT(adapter)) {
 		g_object_unref(adapter);
 		adapter = NULL;
 	}
-	if(bluez_manager != NULL) {
+	
+	if(G_IS_OBJECT(bluez_manager)) {
 		g_object_unref(bluez_manager);
 		bluez_manager = NULL;
-	}
-
-	for(i = 0; i < NUM_SERVICES; i++) {
-		for(j = 0; j < services[i].num_chars; j++) {
-			if(services[i].char_proxies[j] != NULL) {
-				g_object_unref(services[i].char_proxies[j]);
-			}
-		}
-		if(services[i].proxy != NULL) {
-			g_object_unref(services[i].proxy);
-		}
 	}
 
 	if(loop != NULL) {
