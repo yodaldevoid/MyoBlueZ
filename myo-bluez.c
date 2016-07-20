@@ -58,7 +58,6 @@ static MyoStatus status = DISCONNECTED;
 typedef struct {
 	const char *UUID;
 	GDBusProxy *proxy;
-	GDBusObjectManagerClient *gatt_manager;
 	const char **char_UUIDs;
 	GDBusProxy **char_proxies;
 	int num_chars;
@@ -93,8 +92,7 @@ static void interface_added_service(GDBusObjectManager *manager,
 		GDBusObject *object, GDBusInterface *interface, gpointer user_data);
 static void stop_myo(int sig);
 
-static void init_GattService(GattService *service, const char *UUID,
-								const char **char_UUIDs, int num_chars) {
+static void init_GattService(GattService *service, const char *UUID, const char **char_UUIDs, int num_chars) {
 	service->UUID = UUID;
 	service->char_UUIDs = char_UUIDs;
 	service->num_chars = num_chars;
@@ -151,8 +149,7 @@ static gint is_characteristic(gconstpointer a, gconstpointer b) {
 	}
 }
 
-static void modified_characteristic_cb(GDBusProxy *proxy, GVariant *changed,
-										GStrv invalid, gpointer user_data) {
+static void chara_UUID_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key;
 	GVariant *value;
@@ -180,7 +177,7 @@ static void set_characteristic(const gchar *path) {
 	GVariant *UUID, *serv_UUID, *serv_path;
 	const char *UUID_str, *serv_UUID_str;
 
-	printf("Set char\n");
+	printf("Set char %s\n", path);
 
 	proxy = g_dbus_proxy_new_for_bus_sync(
 			G_BUS_TYPE_SYSTEM,
@@ -200,7 +197,7 @@ static void set_characteristic(const gchar *path) {
 		sig_id = (gulong*) malloc(sizeof(gulong));
 		*sig_id = g_signal_connect(
 				proxy, "g-properties-changed",
-				G_CALLBACK(modified_characteristic_cb), sig_id);
+				G_CALLBACK(chara_UUID_cb), sig_id);
 		g_object_unref(proxy);
 		return;
 	}
@@ -211,11 +208,6 @@ static void set_characteristic(const gchar *path) {
 	if(path == NULL) {
 		return;
 	}
-	/*
-	service = (GDBusProxy*) g_dbus_object_manager_get_interface(
-			(GDBusObjectManager*) bluez_manager,
-			g_variant_get_string(serv_path, NULL), GATT_SERVICE_IFACE);
-	*/
 	service = g_dbus_proxy_new_for_bus_sync(
 			G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
 			g_variant_get_string(serv_path, NULL), GATT_SERVICE_IFACE, NULL,
@@ -261,22 +253,16 @@ static void set_characteristic(const gchar *path) {
 	return;
 }
 
-static void modified_service_cb(GDBusProxy *proxy, GVariant *changed,
-								GStrv invalid, gpointer user_data) {
+static void serv_UUID_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key;
 	GVariant *value;
-
-	printf("Modified service\n");
 
 	//check if UUID was set
 	if(g_variant_n_children(changed) > 0) {
 		g_variant_get(changed, "a{sv}", &iter);
 		while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
-			printf("Checking UUID\n");
-			printf("Key: %s\n", key);
 			if(strcmp(key, "UUID") == 0) {
-				printf("UUID set\n");
 				//if UUID set kill notifier and call set_service
 				g_signal_handler_disconnect(proxy, *((gulong*) user_data));
 				free(user_data);
@@ -297,14 +283,8 @@ static void set_service(const gchar *path) {
 	const char *UUID_str;
 	gchar **names;
 
-	printf("Set service\n");
+	printf("Set service:: %s\n", path);
 
-	/*
-	//Don't know why this does not work. This manager gives the signal after all
-	proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
-											(GDBusObjectManager*) bluez_manager,
-											path, GATT_SERVICE_IFACE);
-	*/
 	proxy = g_dbus_proxy_new_for_bus_sync(
 			G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
 			path, GATT_SERVICE_IFACE, NULL, &error);
@@ -315,7 +295,6 @@ static void set_service(const gchar *path) {
 	}
 
 	printf("Properties:\n");
-
 	names = g_dbus_proxy_get_cached_property_names(proxy);
 	i = 0;
 	if(names == NULL) {
@@ -333,7 +312,7 @@ static void set_service(const gchar *path) {
 		printf("UUID not set\n");
 		sig_id = (gulong*) malloc(sizeof(gulong));
 		*sig_id = g_signal_connect(proxy, "g-properties-changed",
-									G_CALLBACK(modified_service_cb), sig_id);
+									G_CALLBACK(serv_UUID_cb), sig_id);
 		return;
 	}
 	UUID_str = g_variant_get_string(UUID, NULL);
@@ -343,18 +322,6 @@ static void set_service(const gchar *path) {
 			printf("Service set\n");
 			services[i].proxy = proxy;
 
-			/*
-			// Bluez has not implemented this yet
-			services[i].gatt_manager = (GDBusObjectManagerClient*)
-					g_dbus_object_manager_client_new_for_bus_sync(
-							G_BUS_TYPE_SYSTEM,
-							G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
-							"org.bluez", path, NULL, NULL, NULL, NULL, &error);
-			ASSERT(error, "Get gatt manager failed");
-
-			g_signal_connect(services[i].gatt_manager, "interface-added",
-							G_CALLBACK(interface_added_characteristic), NULL);
-			*/
 			g_variant_unref(UUID);
 			return;
 		}
@@ -366,8 +333,7 @@ static void set_service(const gchar *path) {
 	return;
 }
 
-static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
-							gpointer user_data) {
+static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key;
 	GVariant *value, *reply;
@@ -405,8 +371,7 @@ static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
 	}
 }
 
-static void modified_device_cb(GDBusProxy *proxy, GVariant *changed,
-								GStrv invalid, gpointer user_data) {
+static void device_UUID_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key;
 	GVariant *value;
@@ -444,6 +409,7 @@ static void set_myo(const gchar *path) {
 			(GDBusObjectManager*) bluez_manager, path, DEVICE_IFACE);
 	if(proxy == NULL) {
 		fprintf(stderr, "Get Myo proxy failed\n");
+		return;
 	}
 	//get UUIDs
 	//if cannot get UUIDs set notify
@@ -456,7 +422,7 @@ static void set_myo(const gchar *path) {
 		}
 		sig_id = (gulong*) malloc(sizeof(gulong));
 		*sig_id = g_signal_connect(proxy, "g-properties-changed",
-									G_CALLBACK(modified_device_cb), sig_id);
+									G_CALLBACK(device_UUID_cb), sig_id);
 		return;
 	}
 
@@ -487,6 +453,7 @@ static void set_myo(const gchar *path) {
 
 	printf("Connecting...\n");
 	do {
+		reply = NULL;
 		reply = g_dbus_proxy_call_sync(
 				myo, "Pair", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "Connection failed");
@@ -551,8 +518,7 @@ static void on_imu(short *quat, short *acc, short *gyro) {
 			gyro[0], gyro[1], gyro[2]);
 }
 
-static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
-						gpointer user_data) {
+static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key, *vals;
 	GVariant *value;
@@ -590,8 +556,7 @@ static void on_pose(libmyo_pose_t pose) {
 			pose2str(pose));
 }
 
-static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
-						gpointer user_data) {
+static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key, *vals;
 	GVariant *value;
@@ -629,8 +594,7 @@ static void on_emg(short *emg, unsigned char moving) {
 			moving);
 }
 
-static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid,
-						gpointer user_data) {
+static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key, *vals;
 	GVariant *value;
@@ -663,7 +627,7 @@ static int get_adapter() {
 			(GDBusObjectManager*) bluez_manager);
 	if(NULL == objects) {
 		//failed
-		fprintf(stderr, "Manger did not give us objects!\n");
+		fprintf(stderr, "Manager did not give us objects!\n");
 		return 1;
 	}
 	object = g_list_find_custom(objects, NULL, is_adapter);
@@ -688,14 +652,14 @@ static int get_adapter() {
 
 int myo_get_name(char *str) {
 	GVariant *name;
-	int length;
+	gsize length;
 	name = g_dbus_proxy_get_cached_property(myo, "Alias");
 	if(name == NULL) {
 		return -1;
 	}
 	str = g_variant_dup_string(name, &length);
 	g_variant_unref(name);
-	return length;
+	return (int) length;
 }
 
 void myo_get_version(char *ver) {
@@ -846,7 +810,7 @@ static int myo_scan() {
 			(GDBusObjectManager*) bluez_manager);
 	if(NULL == objects) {
 		//failed
-		fprintf (stderr, "Manger did not give us objects!\n");
+		fprintf (stderr, "Manager did not give us objects!\n");
 		return 1;
 	}
 
@@ -864,7 +828,7 @@ static int myo_scan() {
 			//cannot be connected to
 			set_myo(g_dbus_object_get_object_path((GDBusObject*) object->data));
 			objects = g_list_delete_link(objects, object);
-		} while(object != NULL);
+		} while(object != NULL && myo == NULL);
 
 
 		//connecting to myo failed or myo not found, so go searching
