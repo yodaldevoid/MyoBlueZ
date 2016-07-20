@@ -47,7 +47,7 @@ static const char *EMG_CHAR_UUIDS[] = {"d5060104-a904-deb9-4748-2c7f4a124842"};
 static GError *error;
 static GMainLoop *loop;
 
-static gulong myo_conn_id;
+static gulong cb_id;
 
 static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
@@ -463,14 +463,13 @@ static void set_myo(const gchar *path) {
 	g_variant_get(UUIDs, "as", &iter);
 	while(g_variant_iter_loop(iter, "&s", &uuid)) {
 		if(strcmp(uuid, MYO_UUID) == 0) {
-			if(myo_conn_id) {
+			if(myo != NULL) {
+				reply = NULL;
 				reply = g_dbus_proxy_call_sync(
 						adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE,
 						-1, NULL, &error);
 				ASSERT(error, "StopDiscovery failed");
 				g_variant_unref(reply);
-				g_signal_handler_disconnect(bluez_manager, myo_conn_id);
-				myo_conn_id = 0;
 			}
 			myo = proxy;
 			break;
@@ -500,11 +499,6 @@ static void set_myo(const gchar *path) {
 	status = CONNECTED;
 	printf("Connected!\n");
 
-	//search for new services
-	g_signal_connect(bluez_manager, "interface-added",
-			G_CALLBACK(interface_added_service), NULL);
-
-	//search for services that are already registered
 	objects = g_dbus_object_manager_get_objects(
 			(GDBusObjectManager*) bluez_manager);
 	if(NULL == objects) {
@@ -527,26 +521,20 @@ static void set_myo(const gchar *path) {
 	return;
 }
 
-static void interface_added_device(
-		GDBusObjectManager *manager, GDBusObject *object,
-		GDBusInterface *interface, gpointer user_data) {
+static void interface_added_cb(GDBusObjectManager *manager, GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
+	printf("interface_added\n");
 	if(is_device(object, NULL)) {
-		set_myo(g_dbus_object_get_object_path(object));
-	}
-}
-
-static void interface_added_service(
-		GDBusObjectManager *manager, GDBusObject *object,
-		GDBusInterface *interface, gpointer user_data) {
-	if(is_service(object, NULL)) {
+		printf("interface_added_devce\n");
+		if(myo == NULL) {
+			set_myo(g_dbus_object_get_object_path(object));
+		} else {
+			//TODO:disconnect callback
+		}
+	} else if(is_service(object, NULL)) {
+		printf("interface_added_service\n");
 		set_service(g_dbus_object_get_object_path(object));
-	}
-}
-
-static void interface_added_characteristic(
-		GDBusObjectManager *manager, GDBusObject *object,
-		GDBusInterface *interface, gpointer user_data) {
-	if(is_characteristic(object, NULL)) {
+	} else if(is_characteristic(object, NULL)) {
+		printf("interface_added_chara\n");
 		set_characteristic(g_dbus_object_get_object_path(object));
 	}
 }
@@ -884,29 +872,6 @@ static int myo_scan() {
 			//scan to find Myo devices
 			printf("Discovery started\n");
 
-			myo_conn_id = g_signal_connect(
-					bluez_manager, "interface-added",
-					G_CALLBACK(interface_added_device), NULL);
-
-			/*
-			dict = g_variant_dict_new(NULL);
-			//add UUIDS
-			g_variant_dict_insert_value(
-					dict, "UUIDs",
-					g_variant_new_fixed_array(
-							G_VARIANT_TYPE_STRING, MYO_UUID, 1, 37));
-
-			//set transport to LE
-			g_variant_dict_insert(dict, "Transport", "s", "le");
-
-			reply = g_dbus_proxy_call_sync(
-					adapter, "SetDiscoveryFilter", dict, G_DBUS_CALL_FLAGS_NONE,
-					-1, NULL, &error);
-			ASSERT(error, "SetDiscoveryFilter failed");
-			g_variant_unref(reply);
-			g_variant_dict_unref(dict);
-			*/
-
 			//TODO: check for not ready and restart if so
 			reply = g_dbus_proxy_call_sync(
 					adapter, "StartDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
@@ -939,15 +904,16 @@ static void stop_myo(int sig) {
 		g_object_unref(myo);
 		myo = NULL;
 	} else {
-		if(myo_conn_id) {
-			reply = g_dbus_proxy_call_sync(
-					adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
-					NULL, &error);
-			ASSERT(error, "StopDiscovery failed");
-			g_variant_unref(reply);
-			g_signal_handler_disconnect(bluez_manager, myo_conn_id);
-			myo_conn_id = 0;
-		}
+		reply = g_dbus_proxy_call_sync(
+				adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
+				NULL, &error);
+		ASSERT(error, "StopDiscovery failed");
+		g_variant_unref(reply);
+	}
+
+	if(cb_id != 0) {
+		g_signal_handler_disconnect(bluez_manager, cb_id);
+		cb_id = 0;
 	}
 	if(adapter != NULL) {
 		g_object_unref(adapter);
@@ -995,6 +961,9 @@ int main(void) {
 					G_BUS_TYPE_SYSTEM, G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
 					"org.bluez", "/", NULL, NULL, NULL, NULL, &error);
 	ASSERT(error, "Get ObjectManager failed");
+
+	cb_id = g_signal_connect(bluez_manager, "interface-added",
+			G_CALLBACK(interface_added_cb), NULL);
 
 	//scan for Myo
 	if(get_adapter() || myo_scan()) {
