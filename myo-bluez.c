@@ -881,7 +881,7 @@ static void stop_myo(int sig) {
 		//TODO: maybe remove device to work around bluez bug
 		g_object_unref(myo);
 		myo = NULL;
-	} else {
+	} else if(G_IS_OBJECT(adapter)) {
 		reply = g_dbus_proxy_call_sync(
 				adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
 				NULL, &error);
