@@ -2,6 +2,7 @@
 #define MYO_BLUEZ_H 
 
 #include <stdbool.h>
+#include <gio/gio.h>
 
 #define side2str(SIDE) \
 	(SIDE == NONE ? "None" : (SIDE == RIGHT ? "Right" : "Left"))
@@ -10,6 +11,7 @@
 
 typedef enum {
 	DISCONNECTED,
+	SEARCHING,
 	CONNECTED
 } MyoStatus;
 
@@ -44,12 +46,35 @@ typedef enum {
 	libmyo_pose_unknown = 0xffff    //Unknown pose.
 } libmyo_pose_t;
 
-int myo_get_name(char *str);
-void myo_get_version(char *ver);
-void myo_EMG_notify_enable(bool enable);
-void myo_IMU_notify_enable(bool enable);
-void myo_arm_indicate_enable(bool enable);
-void myo_update_enable(bool emg, bool imu, bool arm);
+typedef struct {
+	const char *UUID;
+	GDBusProxy *proxy;
+	const char **char_UUIDs;
+	GDBusProxy **char_proxies;
+	int num_chars;
+} GattService;
+
+#define NUM_SERVICES 5
+
+typedef struct {
+	GDBusProxy *proxy;
+	const char *address;
+
+	GattService services[NUM_SERVICES];
+
+	gulong imu_sig_id;
+	gulong arm_sig_id;
+	gulong emg_sig_id;
+
+	MyoStatus status;
+} Myo;
+
+int myo_get_name(Myo *myo, char *str);
+void myo_get_version(Myo *myo, char *ver);
+void myo_EMG_notify_enable(Myo *myo, bool enable);
+void myo_IMU_notify_enable(Myo *myo, bool enable);
+void myo_arm_indicate_enable(Myo *myo, bool enable);
+void myo_update_enable(Myo *myo, bool emg, bool imu, bool arm);
 
 char* pose2str(libmyo_pose_t pose) {
 	switch(pose) {

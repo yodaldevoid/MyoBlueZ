@@ -5,7 +5,6 @@
 #include <bluetooth/bluetooth.h>
 
 #include <glib.h>
-#include <gio/gio.h>
 
 #include "myo-bluez.h"
 #include "myo-bluetooth/myohw.h"
@@ -51,22 +50,8 @@ static gulong cb_id;
 
 static GDBusObjectManagerClient *bluez_manager;
 static GDBusProxy *adapter;
-static GDBusProxy *myo;
-
-static MyoStatus status = DISCONNECTED;
-
-typedef struct {
-	const char *UUID;
-	GDBusProxy *proxy;
-	const char **char_UUIDs;
-	GDBusProxy **char_proxies;
-	int num_chars;
-} GattService;
 
 //TODO: add unknown services
-#define NUM_SERVICES 5
-static GattService services[NUM_SERVICES];
-
 #define battery_service services[0]
 #define myo_control_service services[1]
 #define imu_service services[2]
@@ -79,9 +64,9 @@ static GattService services[NUM_SERVICES];
 #define arm_data arm_service.char_proxies[0]
 #define emg_data emg_service.char_proxies[0]
 
-static gulong imu_sig_id;
-static gulong arm_sig_id;
-static gulong emg_sig_id;
+#define MAX_MYOS 4
+static Myo myos[MAX_MYOS];
+static int num_myos;
 
 static void set_characteristic(const gchar *path);
 static void set_service(const gchar *path);
@@ -226,15 +211,15 @@ static void set_characteristic(const gchar *path) {
 	serv_UUID_str = g_variant_get_string(serv_UUID, NULL);
 
 	for(i = 0; i < NUM_SERVICES; i++) {
-		if(strcmp(services[i].UUID, serv_UUID_str) == 0) {
+		if(strcmp(myos[0].services[i].UUID, serv_UUID_str) == 0) {
 			break;
 		}
 	}
 
-	for(j = 0; j < services[i].num_chars; j++) {
-		if(strcmp(services[i].char_UUIDs[j], UUID_str) == 0) {
+	for(j = 0; j < myos[0].services[i].num_chars; j++) {
+		if(strcmp(myos[0].services[i].char_UUIDs[j], UUID_str) == 0) {
 			printf("Char set\n");
-			services[i].char_proxies[j] = proxy;
+			myos[0].services[i].char_proxies[j] = proxy;
 
 			g_object_unref(service);
 
@@ -318,9 +303,9 @@ static void set_service(const gchar *path) {
 	UUID_str = g_variant_get_string(UUID, NULL);
 
 	for(i = 0; i < NUM_SERVICES; i++) {
-		if(strcmp(UUID_str, services[i].UUID) == 0) {
+		if(strcmp(UUID_str, myos[0].services[i].UUID) == 0) {
 			printf("Service set\n");
-			services[i].proxy = proxy;
+			myos[0].services[i].proxy = proxy;
 
 			g_variant_unref(UUID);
 			return;
@@ -338,31 +323,47 @@ static void disconnect_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, g
 	const gchar *key;
 	GVariant *value, *reply;
 
+	int i;
+	Myo *myo = NULL;
+
 	//check if property was "connected"
 	if(g_variant_n_children(changed) > 0) {
 		g_variant_get(changed, "a{sv}", &iter);
 		while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
 			if(strcmp(key, "Connected") == 0) {
 				if(!g_variant_get_boolean(value)) {
+					for(i = 0; i < num_myos; i++) {
+						if(myos[i].proxy == proxy) {
+							myo = &myos[i];
+							break;
+						}
+					}
+
+					if(myo == NULL) {
+						//couldn't find myo in registered myos
+						//this REALLY shouldn't ever happen
+						return;
+					}
+
 					//disconnected
 					printf("Myo disconnected\n");
 					reply = g_dbus_proxy_call_sync(
-							myo, "Disconnect", NULL, G_DBUS_CALL_FLAGS_NONE,
+							proxy, "Disconnect", NULL, G_DBUS_CALL_FLAGS_NONE,
 							-1, NULL, &error);
 					ASSERT(error, "Disconnect failed");
 					g_variant_unref(reply);
-					status = DISCONNECTED;
+					myo->status = DISCONNECTED;
 
 					printf("Connecting...\n");
 					do {
 						reply = g_dbus_proxy_call_sync(
-								myo, "Pair", NULL, G_DBUS_CALL_FLAGS_NONE,
+								proxy, "Pair", NULL, G_DBUS_CALL_FLAGS_NONE,
 								-1, NULL, &error);
 						ASSERT(error, "Connection failed");
 					} while(reply == NULL);
 					g_variant_unref(reply);
 
-					status = CONNECTED;
+					myo->status = CONNECTED;
 					printf("Connected!\n");
 				}
 			}
@@ -408,7 +409,7 @@ static void set_myo(const gchar *path) {
 	proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
 			(GDBusObjectManager*) bluez_manager, path, DEVICE_IFACE);
 	if(proxy == NULL) {
-		fprintf(stderr, "Get Myo proxy failed\n");
+		fprintf(stderr, "Get device proxy failed\n");
 		return;
 	}
 	//get UUIDs
@@ -423,30 +424,34 @@ static void set_myo(const gchar *path) {
 		sig_id = (gulong*) malloc(sizeof(gulong));
 		*sig_id = g_signal_connect(proxy, "g-properties-changed",
 									G_CALLBACK(device_UUID_cb), sig_id);
+		g_object_unref(proxy);
 		return;
 	}
 
 	g_variant_get(UUIDs, "as", &iter);
 	while(g_variant_iter_loop(iter, "&s", &uuid)) {
 		if(strcmp(uuid, MYO_UUID) == 0) {
-			if(myo != NULL) {
-				reply = NULL;
-				reply = g_dbus_proxy_call_sync(
-						adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE,
-						-1, NULL, &error);
-				ASSERT(error, "StopDiscovery failed");
-				g_variant_unref(reply);
-			}
-			myo = proxy;
+			// HACK:
+			myos[0].proxy = proxy;
+			num_myos++;
 			break;
 		}
 	}
 	g_variant_iter_free(iter);
 	g_variant_unref(UUIDs);
 
-	if(myo == NULL) {
+	if(myos[0].proxy == NULL) {
 		g_object_unref(proxy);
 		return;
+	} else if(myos[0].status == SEARCHING) {
+		reply = NULL;
+		reply = g_dbus_proxy_call_sync(
+				adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE,
+				-1, NULL, &error);
+		ASSERT(error, "StopDiscovery failed");
+		g_variant_unref(reply);
+
+		myos[0].status = DISCONNECTED;
 	}
 
 	printf("Myo found!\n");
@@ -455,15 +460,15 @@ static void set_myo(const gchar *path) {
 	do {
 		reply = NULL;
 		reply = g_dbus_proxy_call_sync(
-				myo, "Pair", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+				myos[0].proxy, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "Connection failed");
 	} while(reply == NULL);
 	g_variant_unref(reply);
 
 	//set watcher for disconnect
-	g_signal_connect(myo, "g-properties-changed", G_CALLBACK(disconnect_cb), NULL);
+	g_signal_connect(myos[0].proxy, "g-properties-changed", G_CALLBACK(disconnect_cb), NULL);
 
-	status = CONNECTED;
+	myos[0].status = CONNECTED;
 	printf("Connected!\n");
 
 	objects = g_dbus_object_manager_get_objects(
@@ -492,11 +497,7 @@ static void interface_added_cb(GDBusObjectManager *manager, GDBusObject *object,
 	printf("interface_added\n");
 	if(is_device(object, NULL)) {
 		printf("interface_added_devce\n");
-		if(myo == NULL) {
-			set_myo(g_dbus_object_get_object_path(object));
-		} else {
-			//TODO:disconnect callback
-		}
+		set_myo(g_dbus_object_get_object_path(object));
 	} else if(is_service(object, NULL)) {
 		printf("interface_added_service\n");
 		set_service(g_dbus_object_get_object_path(object));
@@ -650,10 +651,10 @@ static int get_adapter() {
 	return 0;
 }
 
-int myo_get_name(char *str) {
+int myo_get_name(Myo *myo, char *str) {
 	GVariant *name;
 	gsize length;
-	name = g_dbus_proxy_get_cached_property(myo, "Alias");
+	name = g_dbus_proxy_get_cached_property(myo->proxy, "Alias");
 	if(name == NULL) {
 		return -1;
 	}
@@ -662,18 +663,18 @@ int myo_get_name(char *str) {
 	return (int) length;
 }
 
-void myo_get_version(char *ver) {
+void myo_get_version(Myo *myo, char *ver) {
 	GVariant *ver_var;
 	const gchar *ver_arr;
 
-	if(version_data == NULL) {
+	if(myo->version_data == NULL) {
 		//error
 		return;
 	}
 
 	ver_var = g_dbus_proxy_call_sync(
-			version_data, "ReadValue", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL,
-			&error);
+			myo->version_data, "ReadValue", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
+			NULL, &error);
 	ASSERT(error, "Failed to get version");
 	ver_arr = g_variant_get_fixed_array(ver_var, NULL, sizeof(gchar));
 
@@ -684,76 +685,76 @@ void myo_get_version(char *ver) {
 	memcpy(ver, ver_arr + 10, 2);
 }
 
-void myo_EMG_notify_enable(bool enable) {
-	if(emg_data == NULL) {
+void myo_EMG_notify_enable(Myo *myo, bool enable) {
+	if(myo->emg_data == NULL) {
 		return;
 	}
 	//call start notify or stop notify
 	if(enable) {
-		g_dbus_proxy_call_sync(emg_data, "StartNotify", NULL,
+		g_dbus_proxy_call_sync(myo->emg_data, "StartNotify", NULL,
 								G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "EMG notify enable failed");
-		if(emg_sig_id == 0) {
-			emg_sig_id = g_signal_connect(emg_data, "g-properties-changed",
-											G_CALLBACK(myo_emg_cb), NULL);
+		if(myo->emg_sig_id == 0) {
+			myo->emg_sig_id = g_signal_connect(myo->emg_data,
+					"g-properties-changed", G_CALLBACK(myo_emg_cb), NULL);
 		}
 	} else {
-		g_dbus_proxy_call_sync(emg_data, "StopNotify", NULL,
+		g_dbus_proxy_call_sync(myo->emg_data, "StopNotify", NULL,
 				G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "EMG notify disable failed");
-		if(emg_sig_id != 0) {
-			g_signal_handler_disconnect(emg_data, emg_sig_id);
+		if(myo->emg_sig_id != 0) {
+			g_signal_handler_disconnect(myo->emg_data, myo->emg_sig_id);
 		}
 	}
 }
 
-void myo_IMU_notify_enable(bool enable) {
-	if(imu_data == NULL) {
+void myo_IMU_notify_enable(Myo *myo, bool enable) {
+	if(myo->imu_data == NULL) {
 		return;
 	}
 	//call start notify or stop notify
 	if(enable) {
-		g_dbus_proxy_call_sync(imu_data, "StartNotify", NULL,
+		g_dbus_proxy_call_sync(myo->imu_data, "StartNotify", NULL,
 								G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "IMU notify enable failed");
-		if(imu_sig_id == 0) {
-			imu_sig_id = g_signal_connect(imu_data, "g-properties-changed",
+		if(myo->imu_sig_id == 0) {
+			myo->imu_sig_id = g_signal_connect(myo->imu_data, "g-properties-changed",
 											G_CALLBACK(myo_imu_cb), NULL);
 		}
 	} else {
-		g_dbus_proxy_call_sync(imu_data, "StopNotify", NULL,
+		g_dbus_proxy_call_sync(myo->imu_data, "StopNotify", NULL,
 								G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "IMU notify disable failed");
-		if(imu_sig_id != 0) {
-			g_signal_handler_disconnect(imu_data, imu_sig_id);
+		if(myo->imu_sig_id != 0) {
+			g_signal_handler_disconnect(myo->imu_data, myo->imu_sig_id);
 		}
 	}
 }
 
-void myo_arm_indicate_enable(bool enable) {
-	if(arm_data == NULL) {
+void myo_arm_indicate_enable(Myo *myo, bool enable) {
+	if(myo->arm_data == NULL) {
 		return;
 	}
 	//call start notify or stop notify
 	if(enable) {
-		g_dbus_proxy_call_sync(arm_data, "StartNotify", NULL,
+		g_dbus_proxy_call_sync(myo->arm_data, "StartNotify", NULL,
 								G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "Arm notify enable failed");
-		if(arm_sig_id == 0) {
-			arm_sig_id = g_signal_connect(arm_data, "g-properties-changed",
+		if(myo->arm_sig_id == 0) {
+			myo->arm_sig_id = g_signal_connect(myo->arm_data, "g-properties-changed",
 											G_CALLBACK(myo_arm_cb), NULL);
 		}
 	} else {
-		g_dbus_proxy_call_sync(arm_data, "StopNotify", NULL,
+		g_dbus_proxy_call_sync(myo->arm_data, "StopNotify", NULL,
 				G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 		ASSERT(error, "Arm notify disable failed");
-		if(arm_sig_id != 0) {
-			g_signal_handler_disconnect(arm_data, arm_sig_id);
+		if(myo->arm_sig_id != 0) {
+			g_signal_handler_disconnect(myo->arm_data, myo->arm_sig_id);
 		}
 	}
 }
 
-void myo_update_enable(bool emg, bool imu, bool arm) {
+void myo_update_enable(Myo *myo, bool emg, bool imu, bool arm) {
 	GVariant *reply, *data_var;
 	unsigned char data[] = {
 			0x01, 0x03, 
@@ -765,14 +766,14 @@ void myo_update_enable(bool emg, bool imu, bool arm) {
 	data_var = g_variant_new_fixed_array(G_VARIANT_TYPE_BYTE, data, 5,
 											sizeof(unsigned char));
 
-	reply = g_dbus_proxy_call_sync(cmd_input, "WriteValue",
+	reply = g_dbus_proxy_call_sync(myo->cmd_input, "WriteValue",
 									g_variant_new_tuple(&data_var, 1),
 									G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 	ASSERT(error, "Update enable failed");
 	g_variant_unref(reply);
 }
 
-static void myo_initialize() {
+static void myo_initialize(Myo *myo) {
 	unsigned char version[4];
 	char name[25];
 
@@ -782,19 +783,19 @@ static void myo_initialize() {
 	printf("Initializing...\n");
 
 	//read firmware version
-	myo_get_version(version);
+	myo_get_version(myo, version);
 	printf("firmware version: %d.%d.%d.%d\n",
 			version[0], version[1], version[2], version[3]);
 
-	myo_get_name(name);
+	myo_get_name(myo, name);
 	printf("device name: %s", name);
 
 	//enable IMU data
 	//myo_IMU_notify_enable(true);
 	//enable on/off arm notifications
-	myo_arm_indicate_enable(true);
+	myo_arm_indicate_enable(myo, true);
 
-	myo_update_enable(false, true, false);
+	myo_update_enable(myo, false, true, false);
 
 	printf("Initialized!\n");
 }
@@ -814,7 +815,8 @@ static int myo_scan() {
 		return 1;
 	}
 
-	if(myo == NULL) {
+	// HACK: Should check all myos
+	if(myos[0].proxy == NULL) {
 		//check to make sure Myo has not already been found
 		printf("Searching objects for myo\n");
 		do {
@@ -828,11 +830,12 @@ static int myo_scan() {
 			//cannot be connected to
 			set_myo(g_dbus_object_get_object_path((GDBusObject*) object->data));
 			objects = g_list_delete_link(objects, object);
-		} while(object != NULL && myo == NULL);
+		} while(object != NULL && myos[0].proxy == NULL);
 
 
 		//connecting to myo failed or myo not found, so go searching
-		if(myo == NULL) {
+		// HACK: should check current myo
+		if(myos[0].proxy == NULL) {
 			//scan to find Myo devices
 			printf("Discovery started\n");
 
@@ -842,6 +845,8 @@ static int myo_scan() {
 					NULL, &error);
 			ASSERT(error, "StartDiscovery failed");
 			g_variant_unref(reply);
+
+			myos[0].status = SEARCHING;
 		}
 	}
 
@@ -851,55 +856,61 @@ static int myo_scan() {
 }
 
 static void stop_myo(int sig) {
-	int i, j;
+	int i, j, k;
 	GVariant *reply;
 
-	for(i = 0; i < NUM_SERVICES; i++) {
-		for(j = 0; j < services[i].num_chars; j++) {
-			if(G_IS_OBJECT(services[i].char_proxies[j])) {
-				g_object_unref(services[i].char_proxies[j]);
-				services[i].char_proxies[j] = NULL;
+	//unref stuff
+	for(i = 0; i < MAX_MYOS; i++) {
+		for(k = 0; k < NUM_SERVICES; k++) {
+			for(j = 0; j < myos[i].services[k].num_chars; j++) {
+				if(G_IS_OBJECT(myos[i].services[k].char_proxies[j])) {
+					g_object_unref(myos[i].services[k].char_proxies[j]);
+					myos[i].services[k].char_proxies[j] = NULL;
+				}
+			}
+			if(G_IS_OBJECT(myos[i].services[k].proxy)) {
+				printf("Freeing service proxy\n");
+				g_object_unref(myos[i].services[k].proxy);
+				myos[i].services[k].proxy = NULL;
 			}
 		}
-		if(G_IS_OBJECT(services[i].proxy)) {
-			printf("Freeing service proxy\n");
-			g_object_unref(services[i].proxy);
-			services[i].proxy = NULL;
-		}
-	}
 
-	//unref stuff
-	if(G_IS_OBJECT(myo)) {
-		if(status == CONNECTED) {
-			//disconnect
+		if(G_IS_OBJECT(myos[i].proxy)) {
+			if(myos[i].status == CONNECTED) {
+				//disconnect
+				reply = g_dbus_proxy_call_sync(
+						myos[i].proxy, "Disconnect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL,
+						&error);
+				ASSERT(error, "Disconnect failed");
+				g_variant_unref(reply);
+			}
+			//TODO: maybe remove device to work around bluez bug
+			printf("Freeing myo proxy\n");
+			g_object_unref(myos[i].proxy);
+			myos[i].proxy = NULL;
+		} else if(G_IS_OBJECT(adapter) && myos[i].status == SEARCHING) {
 			reply = g_dbus_proxy_call_sync(
-					myo, "Disconnect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL,
-					&error);
-			ASSERT(error, "Disconnect failed");
+					adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
+					NULL, &error);
+			ASSERT(error, "StopDiscovery failed");
 			g_variant_unref(reply);
 		}
-		//TODO: maybe remove device to work around bluez bug
-		g_object_unref(myo);
-		myo = NULL;
-	} else if(G_IS_OBJECT(adapter)) {
-		reply = g_dbus_proxy_call_sync(
-				adapter, "StopDiscovery", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
-				NULL, &error);
-		ASSERT(error, "StopDiscovery failed");
-		g_variant_unref(reply);
 	}
 
 	if(cb_id != 0) {
+		printf("Disconnecting signal handler\n");
 		g_signal_handler_disconnect(bluez_manager, cb_id);
 		cb_id = 0;
 	}
 	
 	if(G_IS_OBJECT(adapter)) {
+		printf("Freeing adapter\n");
 		g_object_unref(adapter);
 		adapter = NULL;
 	}
 	
 	if(G_IS_OBJECT(bluez_manager)) {
+		printf("Freeing bluez manager\n");
 		g_object_unref(bluez_manager);
 		bluez_manager = NULL;
 	}
@@ -915,13 +926,18 @@ static void stop_myo(int sig) {
 }
 
 int main(void) {
+	int i;
+
 	signal(SIGINT, stop_myo);
 
-	init_GattService(&battery_service, BATT_UUID, BATT_CHAR_UUIDS, 1);
-	init_GattService(&myo_control_service, MYO_UUID, MYO_CHAR_UUIDS, 3);
-	init_GattService(&imu_service, IMU_UUID, IMU_CHAR_UUIDS, 2);
-	init_GattService(&arm_service, ARM_UUID, ARM_CHAR_UUIDS, 1);
-	init_GattService(&emg_service, EMG_UUID, EMG_CHAR_UUIDS, 1);
+	for(i = 0; i < MAX_MYOS; i++) {
+		init_GattService(&myos[i].battery_service, BATT_UUID, BATT_CHAR_UUIDS, 1);
+		init_GattService(&myos[i].myo_control_service, MYO_UUID, MYO_CHAR_UUIDS, 3);
+		init_GattService(&myos[i].imu_service, IMU_UUID, IMU_CHAR_UUIDS, 2);
+		init_GattService(&myos[i].arm_service, ARM_UUID, ARM_CHAR_UUIDS, 1);
+		init_GattService(&myos[i].emg_service, EMG_UUID, EMG_CHAR_UUIDS, 1);
+	}
+	num_myos = 0;
 
 	loop = g_main_loop_new(NULL, false);
 
