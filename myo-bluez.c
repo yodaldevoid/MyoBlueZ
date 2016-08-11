@@ -9,9 +9,15 @@
 #include "myo-bluez.h"
 #include "myo-bluetooth/myohw.h"
 
+#ifdef DEBUG
+#define debug(M, ...) fprintf(stderr, "DEBUG %s:%d: " M "\n", __FILE__, __LINE__, ##__VA_ARGS__)
+#else
+#define debug(M, ...)
+#endif
+
 #define ASSERT(GERR, MSG) \
 	if(GERR != NULL) { \
-		fprintf(stderr, "%s: %s\n", MSG, GERR->message); \
+		debug("%s: %s", MSG, GERR->message); \
 		g_error_free(GERR); \
 		GERR = NULL; \
 	}
@@ -162,7 +168,7 @@ static void set_characteristic(const gchar *path) {
 	GVariant *UUID, *serv_UUID, *serv_path;
 	const char *UUID_str, *serv_UUID_str;
 
-	printf("Set char %s\n", path);
+	debug("Set char %s", path);
 
 	proxy = g_dbus_proxy_new_for_bus_sync(
 			G_BUS_TYPE_SYSTEM,
@@ -218,7 +224,7 @@ static void set_characteristic(const gchar *path) {
 
 	for(j = 0; j < myos[0].services[i].num_chars; j++) {
 		if(strcmp(myos[0].services[i].char_UUIDs[j], UUID_str) == 0) {
-			printf("Char set\n");
+			debug("Char set");
 			myos[0].services[i].char_proxies[j] = proxy;
 
 			g_object_unref(service);
@@ -268,44 +274,31 @@ static void set_service(const gchar *path) {
 	const char *UUID_str;
 	gchar **names;
 
-	printf("Set service:: %s\n", path);
 
 	proxy = g_dbus_proxy_new_for_bus_sync(
 			G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
 			path, GATT_SERVICE_IFACE, NULL, &error);
 	ASSERT(error, "Get service proxy failed");
 	if(proxy == NULL) {
-		fprintf(stderr, "Get service proxy failed\n");
 		return;
-	}
-
-	printf("Properties:\n");
-	names = g_dbus_proxy_get_cached_property_names(proxy);
-	i = 0;
-	if(names == NULL) {
-		printf("names is empty\n");
-	} else {
-		while(names[i] != NULL) {
-			printf("%s\n", names[i++]);
-		}
 	}
 
 	UUID = g_dbus_proxy_get_cached_property(proxy, "UUID");
 	if(UUID == NULL) {
 		//UUID not set yet
 		//set notifier
-		printf("UUID not set\n");
 		sig_id = (gulong*) malloc(sizeof(gulong));
 		*sig_id = g_signal_connect(proxy, "g-properties-changed",
 									G_CALLBACK(serv_UUID_cb), sig_id);
+		debug("Service UUID not set");
 		return;
 	}
 	UUID_str = g_variant_get_string(UUID, NULL);
 
 	for(i = 0; i < NUM_SERVICES; i++) {
 		if(strcmp(UUID_str, myos[0].services[i].UUID) == 0) {
-			printf("Service set\n");
 			myos[0].services[i].proxy = proxy;
+			debug("Service set");
 
 			g_variant_unref(UUID);
 			return;
@@ -382,7 +375,7 @@ static void device_UUID_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, 
 		g_variant_get(changed, "a{sv}", &iter);
 		while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
 			if(strcmp(key, "UUIDs") == 0) {
-				//if UUIDs set kill notifier and call set_service
+				//if UUIDs set, kill notifier and call set_myo
 				//TODO: might cause problems if not all UUIDs are set at once
 				g_signal_handler_disconnect(proxy, *((gulong*) user_data));
 				free(user_data);
@@ -494,15 +487,12 @@ static void set_myo(const gchar *path) {
 }
 
 static void interface_added_cb(GDBusObjectManager *manager, GDBusObject *object, GDBusInterface *interface, gpointer user_data) {
-	printf("interface_added\n");
 	if(is_device(object, NULL)) {
-		printf("interface_added_devce\n");
+		debug("interface_added_devce");
 		set_myo(g_dbus_object_get_object_path(object));
 	} else if(is_service(object, NULL)) {
-		printf("interface_added_service\n");
 		set_service(g_dbus_object_get_object_path(object));
 	} else if(is_characteristic(object, NULL)) {
-		printf("interface_added_chara\n");
 		set_characteristic(g_dbus_object_get_object_path(object));
 	}
 }
@@ -811,14 +801,13 @@ static int myo_scan() {
 			(GDBusObjectManager*) bluez_manager);
 	if(NULL == objects) {
 		//failed
-		fprintf (stderr, "Manager did not give us objects!\n");
+		fprintf(stderr, "Manager did not give us objects!\n");
 		return 1;
 	}
 
 	// HACK: Should check all myos
 	if(myos[0].proxy == NULL) {
 		//check to make sure Myo has not already been found
-		printf("Searching objects for myo\n");
 		do {
 			object = g_list_find_custom(objects, NULL, is_device);
 			if(object == NULL) {
@@ -828,6 +817,7 @@ static int myo_scan() {
 			//Myo has been found so we don't have to scan for it
 			//TODO: might be a problem if there are multiple Myos and this one
 			//cannot be connected to
+	debug("Searching objects for myo\n");
 			set_myo(g_dbus_object_get_object_path((GDBusObject*) object->data));
 			objects = g_list_delete_link(objects, object);
 		} while(object != NULL && myos[0].proxy == NULL);
@@ -869,7 +859,7 @@ static void stop_myo(int sig) {
 				}
 			}
 			if(G_IS_OBJECT(myos[i].services[k].proxy)) {
-				printf("Freeing service proxy\n");
+				debug("Freeing service proxy");
 				g_object_unref(myos[i].services[k].proxy);
 				myos[i].services[k].proxy = NULL;
 			}
@@ -885,7 +875,7 @@ static void stop_myo(int sig) {
 				g_variant_unref(reply);
 			}
 			//TODO: maybe remove device to work around bluez bug
-			printf("Freeing myo proxy\n");
+			debug("Freeing myo proxy");
 			g_object_unref(myos[i].proxy);
 			myos[i].proxy = NULL;
 		} else if(G_IS_OBJECT(adapter) && myos[i].status == SEARCHING) {
@@ -904,13 +894,13 @@ static void stop_myo(int sig) {
 	}
 	
 	if(G_IS_OBJECT(adapter)) {
-		printf("Freeing adapter\n");
+		debug("Freeing adapter");
 		g_object_unref(adapter);
 		adapter = NULL;
 	}
 	
 	if(G_IS_OBJECT(bluez_manager)) {
-		printf("Freeing bluez manager\n");
+		debug("Freeing bluez manager");
 		g_object_unref(bluez_manager);
 		bluez_manager = NULL;
 	}
@@ -959,6 +949,7 @@ int main(void) {
 		return 1;
 	}
 
+	debug("Running Main Loop\n");
 	g_main_loop_run(loop);
 
 	stop_myo(0);
