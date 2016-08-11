@@ -1,2 +1,4 @@
 *.bak
 *.csv#
+*.o
+myo-bluez

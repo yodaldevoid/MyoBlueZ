@@ -9,6 +9,8 @@
 #define dir2str(DIR) \
 	(DIR == UNKNOWN ? "Unknown" : (DIR == X_TO_WRIST ? "Wrist" : "Elbow"))
 
+typedef void* myobluez_myo_t;
+
 typedef enum {
 	DISCONNECTED,
 	SEARCHING,
@@ -46,35 +48,12 @@ typedef enum {
 	libmyo_pose_unknown = 0xffff    //Unknown pose.
 } libmyo_pose_t;
 
-typedef struct {
-	const char *UUID;
-	GDBusProxy *proxy;
-	const char **char_UUIDs;
-	GDBusProxy **char_proxies;
-	int num_chars;
-} GattService;
-
-#define NUM_SERVICES 5
-
-typedef struct {
-	GDBusProxy *proxy;
-	const char *address;
-
-	GattService services[NUM_SERVICES];
-
-	gulong imu_sig_id;
-	gulong arm_sig_id;
-	gulong emg_sig_id;
-
-	MyoStatus status;
-} Myo;
-
-int myo_get_name(Myo *myo, char *str);
-void myo_get_version(Myo *myo, char *ver);
-void myo_EMG_notify_enable(Myo *myo, bool enable);
-void myo_IMU_notify_enable(Myo *myo, bool enable);
-void myo_arm_indicate_enable(Myo *myo, bool enable);
-void myo_update_enable(Myo *myo, bool emg, bool imu, bool arm);
+int myo_get_name(myobluez_myo_t *myo, char *str);
+void myo_get_version(myobluez_myo_t *myo, unsigned char *ver);
+void myo_EMG_notify_enable(myobluez_myo_t *myo, bool enable);
+void myo_IMU_notify_enable(myobluez_myo_t *myo, bool enable);
+void myo_arm_indicate_enable(myobluez_myo_t *myo, bool enable);
+void myo_update_enable(myobluez_myo_t *myo, bool emg, bool imu, bool arm);
 
 char* pose2str(libmyo_pose_t pose) {
 	switch(pose) {
