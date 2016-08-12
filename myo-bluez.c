@@ -97,7 +97,6 @@ typedef struct {
 static Myo myos[MAX_MYOS];
 static int num_myos;
 
-static void set_characteristic(const gchar *path);
 static void set_myo(const gchar *path);
 
 static void init_GattService(GattService *service, const char *UUID, const char **char_UUIDs, int num_chars) {
@@ -170,118 +169,57 @@ static Myo* get_myo_from_proxy(GDBusProxy *proxy) {
 	return NULL;
 }
 
-static void chara_UUID_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
-	GVariantIter *iter;
-	const gchar *key;
-	GVariant *value;
+static void set_characteristic(GattService *serv, const gchar *char_path) {
+	int i;
+	GDBusProxy *proxy;
+	GVariant *UUID;
+	const char *UUID_str;
 
-	//check if UUID was set
-	if(g_variant_n_children(changed) > 0) {
-		g_variant_get(changed, "a{sv}", &iter);
-		while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
-			if(strcmp(key, "UUID") == 0) {
-				//if UUID set kill notifier and call set_service
-				g_signal_handler_disconnect(proxy, *((gulong*) user_data));
-				free(user_data);
-				set_characteristic(g_dbus_proxy_get_object_path(proxy));
-				break;
-			}
-		}
-		g_variant_iter_free(iter);
-	}
-}
-
-static void set_characteristic(const gchar *path) {
-	gulong *sig_id;
-	int i, j;
-	GDBusProxy *service, *proxy;
-	GVariant *UUID, *serv_UUID, *serv_path;
-	const char *UUID_str, *serv_UUID_str;
-
-	debug("Set char %s", path);
+	debug("Setting Characteristic at %s", char_path);
 
 	proxy = g_dbus_proxy_new_for_bus_sync(
 			G_BUS_TYPE_SYSTEM,
-			G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", path,
+			G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez", char_path,
 			GATT_CHARACTERISTIC_IFACE, NULL, &error);
 	ASSERT(error, "Get characteristic proxy failed");
 	if(proxy == NULL) {
 		fprintf(stderr, "Get characteristic proxy failed\n");
 	}
 
-	//check UUIDs for which service
-	//get UUID
 	UUID = g_dbus_proxy_get_cached_property(proxy, "UUID");
 	if(UUID == NULL) {
-		//UUID not set yet
-		//set notifier
-		sig_id = (gulong*) malloc(sizeof(gulong));
-		*sig_id = g_signal_connect(
-				proxy, "g-properties-changed",
-				G_CALLBACK(chara_UUID_cb), sig_id);
-		g_object_unref(proxy);
+		//This shouldn't happen
+		debug("Characteristic UUID not set");
 		return;
 	}
 	UUID_str = g_variant_get_string(UUID, NULL);
 
-	//get service object path
-	serv_path = g_dbus_proxy_get_cached_property(proxy, "Service");
-	if(path == NULL) {
-		return;
-	}
-	service = g_dbus_proxy_new_for_bus_sync(
-			G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
-			g_variant_get_string(serv_path, NULL), GATT_SERVICE_IFACE, NULL,
-			&error);
-	ASSERT(error, "Get service for characteristic failed");
-	if(service == NULL) {
-		fprintf(stderr, "Get service for characteristic failed\n");
-	}
+	for(i = 0; i < serv->num_chars; i++) {
+		if(strcmp(serv->char_UUIDs[i], UUID_str) == 0) {
+			debug("Characteristic set");
+			serv->char_proxies[i] = proxy;
 
-	//get service UUID string
-	serv_UUID = g_dbus_proxy_get_cached_property(service, "UUID");
-	if(serv_UUID == NULL) {
-		printf("Set char failed\n");
-		return;
-	}
-	serv_UUID_str = g_variant_get_string(serv_UUID, NULL);
-
-	for(i = 0; i < NUM_SERVICES; i++) {
-		if(strcmp(myos[0].services[i].UUID, serv_UUID_str) == 0) {
-			break;
-		}
-	}
-
-	for(j = 0; j < myos[0].services[i].num_chars; j++) {
-		if(strcmp(myos[0].services[i].char_UUIDs[j], UUID_str) == 0) {
-			debug("Char set");
-			myos[0].services[i].char_proxies[j] = proxy;
-
-			g_object_unref(service);
-
-			g_variant_unref(serv_UUID);
 			g_variant_unref(UUID);
 			return;
 		}
 	}
 
-	//proxy did not get set
-	g_object_unref(service);
-
-	g_variant_unref(serv_UUID);
+	debug("Characteristic was not set!");
 	g_variant_unref(UUID);
 	g_object_unref(proxy);
 	return;
 }
 
 static void set_service(Myo *myo, const gchar *serv_path) {
-	//gulong *sig_id;
 	int i;
-	GDBusProxy *proxy;
-	GVariant *UUID;
+	GDBusProxy *proxy, *chara;
+	GVariant *UUID, *serv;
 	const char *UUID_str;
 
-	GList *objects, *chara;
+	GList *objects, *object;
+	const gchar *char_path, *char_serv_path;
+
+	debug("Setting Service at %s", serv_path);
 
 	proxy = g_dbus_proxy_new_for_bus_sync(
 			G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
@@ -293,12 +231,8 @@ static void set_service(Myo *myo, const gchar *serv_path) {
 
 	UUID = g_dbus_proxy_get_cached_property(proxy, "UUID");
 	if(UUID == NULL) {
-		//UUID not set yet
 		//This shouldn't happen
 		debug("Service UUID not set");
-		//sig_id = (gulong*) malloc(sizeof(gulong));
-		//*sig_id = g_signal_connect(proxy, "g-properties-changed",
-		//							G_CALLBACK(serv_UUID_cb), sig_id);
 		return;
 	}
 	UUID_str = g_variant_get_string(UUID, NULL);
@@ -309,11 +243,55 @@ static void set_service(Myo *myo, const gchar *serv_path) {
 			myo->services[i].proxy = proxy;
 
 			g_variant_unref(UUID);
+
+			//search for chars
+			objects = g_dbus_object_manager_get_objects(
+					(GDBusObjectManager*) bluez_manager);
+			if(NULL == objects) {
+				debug("Manager did not give us objects!");
+				return;
+			}
+
+			debug("Searching objects for characteristics, expecting %d", myo->services[i].num_chars);
+			do {
+				object = NULL;
+				object = g_list_find_custom(objects, NULL, is_characteristic);
+				if(object != NULL) {
+					char_path = g_dbus_object_get_object_path((GDBusObject*) object->data);
+					chara = g_dbus_proxy_new_for_bus_sync(
+							G_BUS_TYPE_SYSTEM, G_DBUS_PROXY_FLAGS_NONE, NULL, "org.bluez",
+							char_path, GATT_CHARACTERISTIC_IFACE, NULL, &error);
+					ASSERT(error, "Get characteristic proxy failed");
+					if(chara == NULL) {
+						objects = g_list_delete_link(objects, object);
+						continue;
+					}
+
+					serv = g_dbus_proxy_get_cached_property(chara, "Service");
+					if(serv != NULL) {
+						char_serv_path = g_variant_get_string(serv, NULL);
+					} else {
+						debug("Characteristic Service not set");
+						g_variant_unref(serv);
+						g_list_free_full(objects, g_object_unref);
+						return;
+					}
+
+					if(strcmp(serv_path, char_serv_path) == 0) {
+						set_characteristic(&myo->services[i], char_path);
+					}
+					g_variant_unref(serv);
+					objects = g_list_delete_link(objects, object);
+				}
+			} while(object != NULL);
+
+			g_list_free_full(objects, g_object_unref);
+
 			return;
 		}
 	}
 
-	//proxy was not set
+	debug("Service was not set!");
 	g_variant_unref(UUID);
 	g_object_unref(proxy);
 	return;
@@ -355,13 +333,14 @@ static void set_services(Myo *myo) {
 			if(device != NULL) {
 				serv_dev_path = g_variant_get_string(device, NULL);
 			} else {
+				debug("Service Device not set");
 				g_variant_unref(device);
 				g_list_free_full(objects, g_object_unref);
 				return;
 			}
 
 			if(strcmp(myo_path, serv_dev_path) == 0) {
-				set_service(myo, g_dbus_object_get_object_path((GDBusObject*) object->data));
+				set_service(myo, serv_path);
 			}
 			g_variant_unref(device);
 			objects = g_list_delete_link(objects, object);
@@ -987,6 +966,11 @@ int main(void) {
 					G_BUS_TYPE_SYSTEM, G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
 					"org.bluez", "/", NULL, NULL, NULL, NULL, &error);
 	ASSERT(error, "Get ObjectManager failed");
+	if(bluez_manager == NULL) {
+		// we have major problems
+		stop_myobluez(0);
+		return 1;
+	}
 
 	cb_id = g_signal_connect(bluez_manager, "interface-added",
 			G_CALLBACK(interface_added_cb), NULL);
