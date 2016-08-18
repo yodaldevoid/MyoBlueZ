@@ -4,10 +4,19 @@
 #include <stdbool.h>
 #include <gio/gio.h>
 
+#ifdef DEBUG
+#define debug(M, ...) fprintf(stderr, "DEBUG %s:%d: " M "\n", __FILE__, __LINE__, ##__VA_ARGS__)
+#else
+#define debug(M, ...)
+#endif
+
 #define side2str(SIDE) \
 	(SIDE == NONE ? "None" : (SIDE == RIGHT ? "Right" : "Left"))
 #define dir2str(DIR) \
 	(DIR == UNKNOWN ? "Unknown" : (DIR == X_TO_WRIST ? "Wrist" : "Elbow"))
+
+#define MYOBLUEZ_ERROR 1
+#define MYOBLUEZ_OK 0
 
 typedef void* myobluez_myo_t;
 
@@ -54,24 +63,7 @@ void myo_EMG_notify_enable(myobluez_myo_t *myo, bool enable);
 void myo_IMU_notify_enable(myobluez_myo_t *myo, bool enable);
 void myo_arm_indicate_enable(myobluez_myo_t *myo, bool enable);
 void myo_update_enable(myobluez_myo_t *myo, bool emg, bool imu, bool arm);
+char* pose2str(libmyo_pose_t pose);
 
-char* pose2str(libmyo_pose_t pose) {
-	switch(pose) {
-		case libmyo_pose_rest:
-			return "Rest";
-		case libmyo_pose_fist:
-			return "Fist";
-		case libmyo_pose_wave_in:
-			return "Wave in";
-		case libmyo_pose_wave_out:
-			return "Wave out";
-		case libmyo_pose_fingers_spread:
-			return "Spread";
-		case libmyo_pose_double_tap:
-			return "Double Tap";
-		default:
-			return "Unknown";
-	}
-}
 
 #endif
