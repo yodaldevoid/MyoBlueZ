@@ -1,7 +1,11 @@
 #ifndef MYO_BLUEZ_H
 #define MYO_BLUEZ_H 
 
+#include <stdlib.h>
 #include <stdbool.h>
+#include <string.h>
+#include <stdio.h>
+
 #include <gio/gio.h>
 
 #ifdef DEBUG
@@ -65,5 +69,7 @@ void myo_arm_indicate_enable(myobluez_myo_t *myo, bool enable);
 void myo_update_enable(myobluez_myo_t *myo, bool emg, bool imu, bool arm);
 char* pose2str(libmyo_pose_t pose);
 
+int myobluez_init();
+void myobluez_deinit();
 
 #endif

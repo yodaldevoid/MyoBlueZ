@@ -1,7 +1,3 @@
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
-
 #include <bluetooth/bluetooth.h>
 
 #include <glib.h>
@@ -42,7 +38,6 @@ static const char *EMG_UUID = "d5060004-a904-deb9-4748-2c7f4a124842";
 static const char *EMG_CHAR_UUIDS[] = {"d5060104-a904-deb9-4748-2c7f4a124842"};
 
 static GError *error;
-static GMainLoop *loop;
 
 static gulong cb_id;
 
@@ -819,7 +814,7 @@ static int scan_myos() {
 	return 0;
 }
 
-static void stop_myobluez(int sig) {
+void myobluez_deinit() {
 	int i, j, k;
 	GVariant *reply;
 
@@ -867,21 +862,10 @@ static void stop_myobluez(int sig) {
 		g_object_unref(bluez_manager);
 		bluez_manager = NULL;
 	}
-
-	if(loop != NULL) {
-		if(g_main_loop_is_running(loop)) {
-			g_main_loop_quit(loop);
-		}
-
-		g_main_loop_unref(loop);
-		loop = NULL;
-	}
 }
 
-int main(void) {
+int myobluez_init() {
 	int i;
-
-	signal(SIGINT, stop_myobluez);
 
 	for(i = 0; i < MAX_MYOS; i++) {
 		init_GattService(&myos[i].battery_service, BATT_UUID, BATT_CHAR_UUIDS, 1);
@@ -892,16 +876,12 @@ int main(void) {
 	}
 	num_myos = 0;
 
-	loop = g_main_loop_new(NULL, false);
-
 	bluez_manager =
 			(GDBusObjectManagerClient*) g_dbus_object_manager_client_new_for_bus_sync(
 					G_BUS_TYPE_SYSTEM, G_DBUS_OBJECT_MANAGER_CLIENT_FLAGS_NONE,
 					"org.bluez", "/", NULL, NULL, NULL, NULL, &error);
 	ASSERT(error, "Get ObjectManager failed");
 	if(bluez_manager == NULL) {
-		// we have major problems
-		stop_myobluez(0);
 		fprintf(stderr, "Error: Is Bluez running?\n");
 		return 1;
 	}
@@ -909,14 +889,7 @@ int main(void) {
 	cb_id = g_signal_connect(bluez_manager, "object-added",
 			G_CALLBACK(object_added_cb), NULL);
 
-	if(scan_myos()) {
-		fprintf(stderr, "Error finding Myo!\n");
-		stop_myobluez(0);
-		return 1;
-	}
-
-	debug("Running Main Loop\n");
-	g_main_loop_run(loop);
+	scan_myos();
 
 	return 0;
 }
