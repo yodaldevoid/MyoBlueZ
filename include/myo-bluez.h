@@ -26,7 +26,7 @@ typedef void* myobluez_myo_t;
 
 typedef enum {
 	DISCONNECTED,
-	SEARCHING,
+	CONNECTING,
 	CONNECTED
 } MyoStatus;
 

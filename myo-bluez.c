@@ -324,10 +324,31 @@ static void set_services(Myo *myo) {
 	g_list_free_full(objects, g_object_unref);
 }
 
+static void device_connect_cb(GObject *source, GAsyncResult *res, gpointer user_data) {
+	Myo *myo;
+	GError *err = NULL;
+	GVariant *reply;
+
+	myo = get_myo_from_proxy((GDBusProxy*) source);
+
+	if(myo == NULL || !G_IS_DBUS_PROXY(myo->proxy)) {
+		//couldn't find myo in registered myos
+		//this REALLY shouldn't ever happen
+		return;
+	}
+
+	reply = g_dbus_proxy_call_finish(myo->proxy, res, &err);
+	ASSERT(err, "Connection failed");
+	g_variant_unref(reply);
+
+	myo->status = CONNECTED;
+	printf("Connected!\n");
+}
+
 static void myo_signal_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key;
-	GVariant *value, *reply;
+	GVariant *value;
 
 	Myo *myo = NULL;
 
@@ -347,24 +368,15 @@ static void myo_signal_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, g
 
 					//disconnected
 					printf("Myo disconnected\n");
-					reply = g_dbus_proxy_call_sync(
-							proxy, "Disconnect", NULL, G_DBUS_CALL_FLAGS_NONE,
-							-1, NULL, &error);
-					ASSERT(error, "Disconnect failed");
-					g_variant_unref(reply);
 					myo->status = DISCONNECTED;
 
-					printf("Connecting...\n");
-					do {
-						reply = g_dbus_proxy_call_sync(
-								proxy, "Pair", NULL, G_DBUS_CALL_FLAGS_NONE,
-								-1, NULL, &error);
-						ASSERT(error, "Connection failed");
-					} while(reply == NULL);
-					g_variant_unref(reply);
+					printf("Reconnecting...\n");
+					g_dbus_proxy_call(
+							proxy, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE,
+							-1, NULL, (GAsyncReadyCallback) device_connect_cb,
+							NULL);
 
-					myo->status = CONNECTED;
-					printf("Connected!\n");
+					myo->status = CONNECTING;
 				}
 			}  else if(strcmp(key, "ServicesResolved") == 0) {
 				if(g_variant_get_boolean(value)) {
@@ -409,7 +421,7 @@ static void set_myo(const gchar *path) {
 	gulong *sig_id;
 
 	GDBusProxy *proxy;
-	GVariant *UUIDs, *reply, *serv_res;
+	GVariant *UUIDs, *serv_res;
 	GVariantIter *iter;
 	gchar *uuid;
 
@@ -466,16 +478,12 @@ static void set_myo(const gchar *path) {
 	g_signal_connect(myo->proxy, "g-properties-changed", G_CALLBACK(myo_signal_cb), NULL);
 
 	printf("Connecting...\n");
-	do {
-		reply = NULL;
-		reply = g_dbus_proxy_call_sync(
-				myos->proxy, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-		ASSERT(error, "Connection failed");
-	} while(reply == NULL);
-	g_variant_unref(reply);
+	g_dbus_proxy_call(
+			myo->proxy, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE,
+			-1, NULL, (GAsyncReadyCallback) device_connect_cb,
+			NULL);
 
-	myos->status = CONNECTED;
-	printf("Connected!\n");
+	myo->status = CONNECTING;
 
 	//check ServicesResolved
 	serv_res = g_dbus_proxy_get_cached_property(myo->proxy, "ServicesResolved");
@@ -835,7 +843,7 @@ void myobluez_deinit() {
 		}
 
 		if(G_IS_DBUS_PROXY(myos[i].proxy)) {
-			if(myos[i].status == CONNECTED) {
+			if(myos[i].status == CONNECTED || myos[i].status == CONNECTING) {
 				//disconnect
 				debug("Disconnecting from myo");
 				reply = g_dbus_proxy_call_sync(
