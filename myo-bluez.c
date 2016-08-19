@@ -63,6 +63,8 @@ typedef struct {
 	gulong arm_sig_id;
 	gulong emg_sig_id;
 
+	GSource *source;
+
 	MyoStatus status;
 } Myo;
 
@@ -83,7 +85,23 @@ typedef struct {
 static Myo myos[MAX_MYOS];
 static int num_myos;
 
+typedef struct {
+	GSource parent;
+	Myo *myo;
+} MyoInitSource;
+
+static gboolean myo_init_prepare(GSource *source, gint *timeout_);
+static gboolean myo_init_dispatch(GSource *source, GSourceFunc callback, gpointer user_data);
+
+GSourceFuncs myo_init_funcs = {
+	myo_init_prepare,
+	NULL,
+	myo_init_dispatch,
+	NULL
+};
+
 static void set_myo(const gchar *path);
+static GSource* myo_init_source_new(Myo *myo, GCancellable *cancellable);
 
 static void init_GattService(GattService *service, const char *UUID, const char **char_UUIDs, int num_chars) {
 	service->UUID = UUID;
@@ -339,7 +357,9 @@ static void device_connect_cb(GObject *source, GAsyncResult *res, gpointer user_
 
 	reply = g_dbus_proxy_call_finish(myo->proxy, res, &err);
 	ASSERT(err, "Connection failed");
-	g_variant_unref(reply);
+	if(reply != NULL) {
+		g_variant_unref(reply);
+	}
 
 	myo->status = CONNECTED;
 	printf("Connected!\n");
@@ -427,16 +447,17 @@ static void set_myo(const gchar *path) {
 
 	Myo *myo;
 
+	GSource *source;
+
 	if(num_myos == MAX_MYOS) {
 		fprintf(stderr, "Maximum myos already registered\n");
 		return;
 	}
 
-	//get path from proxy
 	proxy = (GDBusProxy*) g_dbus_object_manager_get_interface(
 			(GDBusObjectManager*) bluez_manager, path, DEVICE_IFACE);
-		fprintf(stderr, "Get device proxy failed\n");
 	if(!G_IS_DBUS_PROXY(proxy)) {
+		debug("Get device proxy failed");
 		return;
 	}
 	//get UUIDs
@@ -493,7 +514,16 @@ static void set_myo(const gchar *path) {
 		set_services(myo);
 	}
 
-	return;
+	//TODO: use a cancellable
+	source = myo_init_source_new(myo, NULL);
+	if(source != NULL) {
+		debug("Attaching source");
+		myo->source = source;
+		if(g_main_context_get_thread_default() == NULL) {
+			debug("Using default context");
+		}
+		g_source_attach(source, g_main_context_get_thread_default());
+	}
 }
 
 static void object_added_cb(GDBusObjectManager *manager, GDBusObject *object, gpointer user_data) {
@@ -794,6 +824,67 @@ static void myo_initialize(Myo *myo) {
 	printf("Initialized!\n");
 }
 
+static gboolean myo_init_prepare(GSource *source, gint *timeout_) {
+	int i, j;
+	MyoInitSource *myo_source = (MyoInitSource*) source;
+
+	*timeout_ = -1;
+
+	for(i = 0; i < NUM_SERVICES; i++) {
+		if(G_IS_DBUS_PROXY(myo_source->myo->services[i].proxy)) {
+			for(j = 0; j < myo_source->myo->services[i].num_chars; j++) {
+				if(!G_IS_DBUS_PROXY(myo_source->myo->services[i].char_proxies[j])) {
+					debug("Service %d char %d proxy not set", i, j);
+					return false;
+				}
+			}
+		} else {
+			debug("Service %d proxy not set", i);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+static gboolean myo_init_dispatch(GSource *source, GSourceFunc callback, gpointer user_data) {
+	MyoInitSource *myo_source = (MyoInitSource*) source;
+
+	myo_initialize(myo_source->myo);
+
+	return true;
+}
+
+static GSource* myo_init_source_new(Myo *myo, GCancellable *cancellable) {
+	GSource *source, *cancellable_source;
+	MyoInitSource *myo_source;
+
+	if(myo == NULL) {
+		debug("Myo invalid");
+		return NULL;
+	}
+	if(cancellable != NULL && !G_IS_CANCELLABLE(cancellable)) {
+		debug("Cancellable invalid");
+		return NULL;
+	}
+
+	source = g_source_new(&myo_init_funcs, sizeof(MyoInitSource));
+	myo_source = (MyoInitSource*) source;
+
+	g_source_set_name(source, "Myo Initialization Source");
+
+	myo_source->myo = myo;
+
+	if(cancellable != NULL) {
+		cancellable_source = g_cancellable_source_new(cancellable);
+		g_source_set_dummy_callback(cancellable_source);
+		g_source_add_child_source(source, cancellable_source);
+		g_source_unref(cancellable_source);
+	}
+
+	return source;
+}
+
 static int scan_myos() {
 	GList *objects;
 	GList *object;
@@ -856,6 +947,10 @@ void myobluez_deinit() {
 			debug("Freeing myo proxy");
 			g_object_unref(myos[i].proxy);
 			myos[i].proxy = NULL;
+		}
+
+		if(myos[i].source != NULL) {
+			g_source_destroy(myos[i].source);
 		}
 	}
 

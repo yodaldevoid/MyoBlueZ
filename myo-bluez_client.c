@@ -23,9 +23,9 @@ void client_stop(int sig) {
 int main(void) {
 	signal(SIGINT, client_stop);
 
-	myobluez_init();
-
 	loop = g_main_loop_new(NULL, false);
+
+	myobluez_init();
 
 	debug("Running Main Loop");
 	g_main_loop_run(loop);
