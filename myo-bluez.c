@@ -3,7 +3,6 @@
 #include <glib.h>
 
 #include "myo-bluez.h"
-#include "myo-bluetooth/myohw.h"
 
 #define ASSERT(GERR, MSG) \
 	if(GERR != NULL) { \
@@ -55,7 +54,7 @@ typedef struct {
 
 typedef struct {
 	GDBusProxy *proxy;
-	const char *address;
+	bool initialized;
 
 	GattService services[NUM_SERVICES];
 
@@ -359,10 +358,10 @@ static void device_connect_cb(GObject *source, GAsyncResult *res, gpointer user_
 	ASSERT(err, "Connection failed");
 	if(reply != NULL) {
 		g_variant_unref(reply);
-	}
 
-	myo->status = CONNECTED;
-	printf("Connected!\n");
+		myo->status = CONNECTED;
+		printf("Connected!\n");
+	}
 }
 
 static void myo_signal_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
@@ -406,8 +405,10 @@ static void myo_signal_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, g
 						//this REALLY shouldn't ever happen
 						return;
 					}
-					debug("ServicesResolved");
-					set_services(myo);
+					if(!myo->initialized) {
+						debug("ServicesResolved");
+						set_services(myo);
+					}
 				}
 			}
 		}
@@ -505,6 +506,7 @@ static void set_myo(const gchar *path) {
 			NULL);
 
 	myo->status = CONNECTING;
+	myo->initialized = false;
 
 	//check ServicesResolved
 	serv_res = g_dbus_proxy_get_cached_property(myo->proxy, "ServicesResolved");
@@ -516,7 +518,7 @@ static void set_myo(const gchar *path) {
 
 	//TODO: use a cancellable
 	source = myo_init_source_new(myo, NULL);
-	if(source != NULL) {
+	if(myo->source == NULL && source != NULL) {
 		debug("Attaching source");
 		myo->source = source;
 		if(g_main_context_get_thread_default() == NULL) {
@@ -679,9 +681,12 @@ int myo_get_name(myobluez_myo_t *bmyo, char *str) {
 	return (int) length;
 }
 
-void myo_get_version(myobluez_myo_t *bmyo, unsigned char *ver) {
+void myo_get_version(myobluez_myo_t *bmyo, myohw_fw_version_t *ver) {
+	GVariantBuilder build_opt;
 	GVariant *ver_var;
-	const gchar *ver_arr;
+	GVariantIter *iter;
+	unsigned char *ver_char = (unsigned char*) ver;
+
 	Myo *myo = (Myo*) bmyo;
 
 	if(myo->version_data == NULL) {
@@ -689,17 +694,20 @@ void myo_get_version(myobluez_myo_t *bmyo, unsigned char *ver) {
 		return;
 	}
 
-	ver_var = g_dbus_proxy_call_sync(
-			myo->version_data, "ReadValue", NULL, G_DBUS_CALL_FLAGS_NONE, -1,
-			NULL, &error);
-	ASSERT(error, "Failed to get version");
-	ver_arr = g_variant_get_fixed_array(ver_var, NULL, sizeof(gchar));
+	g_variant_builder_init(&build_opt, G_VARIANT_TYPE("a{sv}"));
 
-	//_, _, _, _, v0, v1, v2, v3 = unpack('BHBBHHHH', fw.payload)
-	memcpy(ver, ver_arr + 4, 2);
-	memcpy(ver, ver_arr + 6, 2);
-	memcpy(ver, ver_arr + 8, 2);
-	memcpy(ver, ver_arr + 10, 2);
+	ver_var = g_dbus_proxy_call_sync(myo->version_data, "ReadValue",
+			g_variant_new("(a{sv})", &build_opt),
+			G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+	ASSERT(error, "Failed to get version");
+	if(ver_var != NULL) {
+		g_variant_get(ver_var, "(ay)", &iter);
+
+		while(g_variant_iter_loop(iter, "y", ver_char))  ver_char++;
+		g_variant_iter_free(iter);
+	} else {
+		debug("Failled to read version");
+	}
 }
 
 void myo_EMG_notify_enable(myobluez_myo_t *bmyo, bool enable) {
@@ -777,29 +785,40 @@ void myo_arm_indicate_enable(myobluez_myo_t *bmyo, bool enable) {
 	}
 }
 
-void myo_update_enable(myobluez_myo_t *bmyo, bool emg, bool imu, bool arm) {
-	GVariant *reply, *data_var;
+void myo_update_enable(
+		myobluez_myo_t *bmyo,
+		myohw_emg_mode_t emg,
+		myohw_imu_mode_t imu,
+		myohw_classifier_mode_t arm)
+{
+	GVariantBuilder build_opt;
+	GVariant *reply;
 	Myo *myo = (Myo*) bmyo;
-	unsigned char data[] = {
-			0x01, 0x03, 
-			emg ? 0x01 : 0x00,
-			imu ? 0x01 : 0x00,
-			arm ? 0x01 : 0x00
-	};
+	myohw_command_set_mode_t cmd;
 
-	data_var = g_variant_new_fixed_array(G_VARIANT_TYPE_BYTE, data, 5,
-											sizeof(unsigned char));
+	cmd.header.command = myohw_command_set_mode;
+	cmd.header.payload_size = 3;
+	cmd.emg_mode = emg;
+	cmd.imu_mode = imu;
+	cmd.classifier_mode = arm;
+
+	g_variant_builder_init(&build_opt, G_VARIANT_TYPE("a{sv}"));
 
 	reply = g_dbus_proxy_call_sync(myo->cmd_input, "WriteValue",
-									g_variant_new_tuple(&data_var, 1),
-									G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+			g_variant_new("(@aya{sv})",
+				g_variant_new_fixed_array(
+					G_VARIANT_TYPE_BYTE, (uint8_t*) &cmd, 5, sizeof(uint8_t)),
+				&build_opt),
+			G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
 	ASSERT(error, "Update enable failed");
-	g_variant_unref(reply);
+	if(reply != NULL) {
+		g_variant_unref(reply);
+	}
 }
 
 static void myo_initialize(Myo *myo) {
-	unsigned char version[4];
-	char name[25];
+	myohw_fw_version_t version;
+	char *name = NULL;
 
 	//unsigned short C;
 	//unsigned char emg_hz, emg_smooth, imu_hz;
@@ -807,20 +826,25 @@ static void myo_initialize(Myo *myo) {
 	printf("Initializing...\n");
 
 	//read firmware version
-	myo_get_version((myobluez_myo_t) myo, version);
+	myo_get_version((myobluez_myo_t) myo, &version);
 	printf("firmware version: %d.%d.%d.%d\n",
-			version[0], version[1], version[2], version[3]);
+			version.major, version.minor, version.patch, version.hardware_rev);
 
 	myo_get_name((myobluez_myo_t) myo, name);
-	printf("device name: %s", name);
+	printf("device name: %s\n", name);
+	g_free(name);
 
 	//enable IMU data
-	//myo_IMU_notify_enable(true);
+	myo_IMU_notify_enable((myobluez_myo_t) myo, true);
 	//enable on/off arm notifications
 	myo_arm_indicate_enable((myobluez_myo_t) myo, true);
 
-	myo_update_enable((myobluez_myo_t) myo, false, true, false);
+	myo_update_enable((myobluez_myo_t) myo,
+			myohw_emg_mode_none,
+			myohw_imu_mode_send_events,
+			myohw_classifier_mode_enabled);
 
+	myo->initialized = true;
 	printf("Initialized!\n");
 }
 
@@ -852,7 +876,7 @@ static gboolean myo_init_dispatch(GSource *source, GSourceFunc callback, gpointe
 
 	myo_initialize(myo_source->myo);
 
-	return true;
+	return G_SOURCE_REMOVE;
 }
 
 static GSource* myo_init_source_new(Myo *myo, GCancellable *cancellable) {
@@ -949,7 +973,7 @@ void myobluez_deinit() {
 			myos[i].proxy = NULL;
 		}
 
-		if(myos[i].source != NULL) {
+		if(myos[i].source != NULL && !g_source_is_destroyed(myos[i].source)) {
 			g_source_destroy(myos[i].source);
 		}
 	}
