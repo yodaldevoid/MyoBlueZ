@@ -363,8 +363,23 @@ static void device_connect_cb(GObject *source, GAsyncResult *res, gpointer user_
 	}
 
 	reply = g_dbus_proxy_call_finish(myo->proxy, res, &err);
-	ASSERT(err, "Connection failed");
-	if(reply != NULL) {
+	if(err != NULL) {
+		debug("Connection failed ; %s", err->message);
+		if(strstr(err->message, "Timeout") != NULL) {
+			reply = g_dbus_proxy_call_sync(
+					myo->proxy, "Disconnect", NULL, G_DBUS_CALL_FLAGS_NONE,
+					-1, NULL, &error);
+			ASSERT(error, "Disconnect failed");
+			g_variant_unref(reply);
+			printf("Retrying...\n");
+			g_dbus_proxy_call(
+					myo->proxy, "Connect", NULL, G_DBUS_CALL_FLAGS_NONE,
+					-1, NULL, (GAsyncReadyCallback) device_connect_cb, NULL);
+
+			myo->conn_status = CONNECTING;
+		}
+		g_clear_error(&err);
+	} else {
 		g_variant_unref(reply);
 
 		myo->conn_status = CONNECTED;
