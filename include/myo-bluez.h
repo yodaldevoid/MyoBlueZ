@@ -17,9 +17,9 @@
 #endif
 
 #define side2str(SIDE) \
-	(SIDE == NONE ? "None" : (SIDE == RIGHT ? "Right" : "Left"))
+	(SIDE == myohw_arm_right ? "Right" : (SIDE == myohw_arm_left ? "Left" : "Unknown"))
 #define dir2str(DIR) \
-	(DIR == UNKNOWN ? "Unknown" : (DIR == X_TO_WRIST ? "Wrist" : "Elbow"))
+	(DIR == myohw_x_direction_toward_wrist ? "Wrist" : (DIR == myohw_x_direction_toward_elbow ? "Elbow" : "Unknown"))
 
 #define MYOBLUEZ_ERROR 1
 #define MYOBLUEZ_OK 0
@@ -32,37 +32,6 @@ typedef enum {
 	CONNECTED
 } MyoStatus;
 
-typedef enum {
-	WORN = 1,
-	REMOVED,
-	POSE,
-} ArmDataType;
-
-typedef enum {
-	NONE,
-	RIGHT,
-	LEFT,
-} ArmSide;
-
-typedef enum {
-	UNKNOWN,
-	X_TO_WRIST,
-	X_TO_ELBOW,
-} ArmXDirection;
-
-typedef enum {
-	libmyo_pose_rest           = 0, //Rest pose.
-	libmyo_pose_fist           = 1, //User is making a fist.
-	libmyo_pose_wave_in        = 2, //User has an open palm rotated towards the posterior of their wrist.
-	libmyo_pose_wave_out       = 3, //User has an open palm rotated towards the anterior of their wrist.
-	libmyo_pose_fingers_spread = 4, //User has an open palm with their fingers spread away from each other.
-	libmyo_pose_double_tap     = 5, //User tapped their thumb and middle finger together twice in succession.
-
-	libmyo_num_poses,               //Number of poses supported; not a valid pose.
-
-	libmyo_pose_unknown = 0xffff    //Unknown pose.
-} libmyo_pose_t;
-
 int myo_get_name(myobluez_myo_t *myo, char *str);
 void myo_get_version(myobluez_myo_t *myo, myohw_fw_version_t *ver);
 void myo_EMG_notify_enable(myobluez_myo_t *myo, bool enable);
@@ -73,7 +42,7 @@ void myo_update_enable(
 		myohw_emg_mode_t emg,
 		myohw_imu_mode_t imu,
 		myohw_classifier_mode_t arm);
-char* pose2str(libmyo_pose_t pose);
+char* pose2str(myohw_pose_t pose);
 
 int myobluez_init();
 void myobluez_deinit();

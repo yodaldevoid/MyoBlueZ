@@ -551,6 +551,7 @@ static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 	GVariantIter *iter;
 	const gchar *key, *vals;
 	GVariant *value;
+	gsize elements;
 
 	short quat[4], acc[3], gyro[3];
 
@@ -558,7 +559,7 @@ static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 		g_variant_get(changed, "a{sv}", &iter);
 		while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
 			if(strcmp(key, "Value") == 0) {
-				vals = g_variant_get_fixed_array(value, NULL, sizeof(gchar));
+				vals = g_variant_get_fixed_array(value, &elements, sizeof(gchar));
 				memcpy(quat, vals, 8);
 				memcpy(acc, vals + 8, 6);
 				memcpy(gyro, vals + 14, 6);
@@ -569,7 +570,7 @@ static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 	}
 }
 
-static void on_arm(ArmSide side, ArmXDirection dir) {
+static void on_arm(myohw_arm_t side, myohw_x_direction_t dir) {
 	printf(
 			"On_Arm:\n"
 			"Side: %s | XDirection: %s\n"
@@ -577,7 +578,7 @@ static void on_arm(ArmSide side, ArmXDirection dir) {
 			side2str(side), dir2str(dir));
 }
 
-static void on_pose(libmyo_pose_t pose) {
+static void on_pose(myohw_pose_t pose) {
 	printf(
 			"On_Pose:\n"
 			"Pose: %s\n"
@@ -587,21 +588,39 @@ static void on_pose(libmyo_pose_t pose) {
 
 static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
+	myohw_classifier_event_t event;
 	const gchar *key, *vals;
 	GVariant *value;
+	gsize elements;
 
 	if(g_variant_n_children(changed) > 0) {
 		g_variant_get(changed, "a{sv}", &iter);
 		while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
 			if(strcmp(key, "Value") == 0) {
-				vals = g_variant_get_fixed_array(value, NULL, sizeof(gchar));
-				//typ, val, xdir = unpack('3B', pay)
-				if(vals[0] == WORN) { // on arm
-					on_arm(vals[1], vals[2]);
-				} else if(vals[0] == REMOVED) { // removed from arm
-					on_arm(NONE, UNKNOWN);
-				} else if(vals[0] == POSE) { // pose
-					on_pose(vals[1]);
+				vals = g_variant_get_fixed_array(value, &elements, sizeof(gchar));
+				memcpy(&event, vals, sizeof(event));
+
+				switch(event.type) {
+					case myohw_classifier_event_arm_synced:
+						on_arm(event.arm, event.x_direction);
+						break;
+					case myohw_classifier_event_arm_unsynced:
+						debug("Unsynced");
+						break;
+					case myohw_classifier_event_pose:
+						on_pose(event.pose);
+						break;
+					case myohw_classifier_event_unlocked:
+						debug("Unlocked");
+						break;
+					case myohw_classifier_event_locked:
+						debug("Locked");
+						break;
+					case myohw_classifier_event_sync_failed:
+						debug("Sync failed");
+						break;
+					default:
+						debug("Unknown event type %d", event.type);
 				}
 			}
 		}
@@ -648,19 +667,19 @@ static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 	}
 }
 
-char* pose2str(libmyo_pose_t pose) {
+char* pose2str(myohw_pose_t pose) {
 	switch(pose) {
-		case libmyo_pose_rest:
+		case myohw_pose_rest:
 			return "Rest";
-		case libmyo_pose_fist:
+		case myohw_pose_fist:
 			return "Fist";
-		case libmyo_pose_wave_in:
+		case myohw_pose_wave_in:
 			return "Wave in";
-		case libmyo_pose_wave_out:
+		case myohw_pose_wave_out:
 			return "Wave out";
-		case libmyo_pose_fingers_spread:
+		case myohw_pose_fingers_spread:
 			return "Spread";
-		case libmyo_pose_double_tap:
+		case myohw_pose_double_tap:
 			return "Double Tap";
 		default:
 			return "Unknown";
