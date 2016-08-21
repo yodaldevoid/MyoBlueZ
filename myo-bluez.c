@@ -6,7 +6,7 @@
 
 #define ASSERT(GERR, MSG) \
 	if(GERR != NULL) { \
-		debug("%s; %s", MSG, GERR->message); \
+		debug(MSG "; %s", GERR->message); \
 		g_clear_error(&GERR); \
 	}
 
@@ -52,9 +52,14 @@ typedef struct {
 
 #define NUM_SERVICES 5
 
+typedef enum {
+	UNKNOWN,
+	DISCOVERED,
+	INITIALIZED
+} MyoStatus;
+
 typedef struct {
 	GDBusProxy *proxy;
-	bool initialized;
 
 	GattService services[NUM_SERVICES];
 
@@ -64,7 +69,8 @@ typedef struct {
 
 	GSource *source;
 
-	MyoStatus status;
+	MyoStatus myo_status;
+	ConnectionStatus conn_status;
 } Myo;
 
 //TODO: add unknown services
@@ -339,6 +345,8 @@ static void set_services(Myo *myo) {
 	} while(object != NULL);
 
 	g_list_free_full(objects, g_object_unref);
+
+	myo->myo_status = DISCOVERED;
 }
 
 static void device_connect_cb(GObject *source, GAsyncResult *res, gpointer user_data) {
@@ -359,7 +367,7 @@ static void device_connect_cb(GObject *source, GAsyncResult *res, gpointer user_
 	if(reply != NULL) {
 		g_variant_unref(reply);
 
-		myo->status = CONNECTED;
+		myo->conn_status = CONNECTED;
 		printf("Connected!\n");
 	}
 }
@@ -387,7 +395,6 @@ static void myo_signal_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, g
 
 					//disconnected
 					printf("Myo disconnected\n");
-					myo->status = DISCONNECTED;
 
 					printf("Reconnecting...\n");
 					g_dbus_proxy_call(
@@ -395,7 +402,7 @@ static void myo_signal_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, g
 							-1, NULL, (GAsyncReadyCallback) device_connect_cb,
 							NULL);
 
-					myo->status = CONNECTING;
+					myo->conn_status = CONNECTING;
 				}
 			}  else if(strcmp(key, "ServicesResolved") == 0) {
 				if(g_variant_get_boolean(value)) {
@@ -405,7 +412,7 @@ static void myo_signal_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, g
 						//this REALLY shouldn't ever happen
 						return;
 					}
-					if(!myo->initialized) {
+					if(myo->myo_status == UNKNOWN) {
 						debug("ServicesResolved");
 						set_services(myo);
 					}
@@ -505,8 +512,8 @@ static void set_myo(const gchar *path) {
 			-1, NULL, (GAsyncReadyCallback) device_connect_cb,
 			NULL);
 
-	myo->status = CONNECTING;
-	myo->initialized = false;
+	myo->conn_status = CONNECTING;
+	myo->myo_status = UNKNOWN;
 
 	//check ServicesResolved
 	serv_res = g_dbus_proxy_get_cached_property(myo->proxy, "ServicesResolved");
@@ -863,7 +870,7 @@ static void myo_initialize(Myo *myo) {
 			myohw_imu_mode_send_events,
 			myohw_classifier_mode_enabled);
 
-	myo->initialized = true;
+	myo->myo_status = INITIALIZED;
 	printf("Initialized!\n");
 }
 
@@ -872,6 +879,8 @@ static gboolean myo_init_prepare(GSource *source, gint *timeout_) {
 	MyoInitSource *myo_source = (MyoInitSource*) source;
 
 	*timeout_ = -1;
+
+	if(myo_source->myo->myo_status == INITIALIZED) return false;
 
 	for(i = 0; i < NUM_SERVICES; i++) {
 		if(G_IS_DBUS_PROXY(myo_source->myo->services[i].proxy)) {
@@ -887,6 +896,7 @@ static gboolean myo_init_prepare(GSource *source, gint *timeout_) {
 		}
 	}
 
+	myo_source->myo->myo_status = DISCOVERED;
 	return true;
 }
 
@@ -895,7 +905,7 @@ static gboolean myo_init_dispatch(GSource *source, GSourceFunc callback, gpointe
 
 	myo_initialize(myo_source->myo);
 
-	return G_SOURCE_REMOVE;
+	return G_SOURCE_CONTINUE;
 }
 
 static GSource* myo_init_source_new(Myo *myo, GCancellable *cancellable) {
@@ -962,6 +972,15 @@ void myobluez_deinit() {
 
 	//unref stuff
 	for(i = 0; i < MAX_MYOS; i++) {
+		if(myos[i].myo_status == INITIALIZED) {
+			myo_IMU_notify_enable((myobluez_myo_t) &myos[i], false);
+			myo_arm_indicate_enable((myobluez_myo_t) &myos[i], false);
+			myo_update_enable((myobluez_myo_t) &myos[i],
+				myohw_emg_mode_none,
+				myohw_imu_mode_none,
+				myohw_classifier_mode_disabled);
+		}
+
 		for(k = 0; k < NUM_SERVICES; k++) {
 			for(j = 0; j < myos[i].services[k].num_chars; j++) {
 				if(G_IS_DBUS_PROXY(myos[i].services[k].char_proxies[j])) {
@@ -977,7 +996,7 @@ void myobluez_deinit() {
 		}
 
 		if(G_IS_DBUS_PROXY(myos[i].proxy)) {
-			if(myos[i].status == CONNECTED || myos[i].status == CONNECTING) {
+			if(myos[i].conn_status == CONNECTED || myos[i].conn_status == CONNECTING) {
 				//disconnect
 				debug("Disconnecting from myo");
 				reply = g_dbus_proxy_call_sync(

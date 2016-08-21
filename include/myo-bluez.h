@@ -30,7 +30,7 @@ typedef enum {
 	DISCONNECTED,
 	CONNECTING,
 	CONNECTED
-} MyoStatus;
+} ConnectionStatus;
 
 int myo_get_name(myobluez_myo_t *myo, char *str);
 void myo_get_version(myobluez_myo_t *myo, myohw_fw_version_t *ver);
