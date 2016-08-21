@@ -695,7 +695,8 @@ int myo_get_name(myobluez_myo_t *bmyo, char *str) {
 	if(name == NULL) {
 		return -1;
 	}
-	str = g_variant_dup_string(name, &length);
+	strncpy(str, g_variant_get_string(name, &length), 25);
+	str[24] = '\0';
 	g_variant_unref(name);
 	return (int) length;
 }
@@ -837,7 +838,7 @@ void myo_update_enable(
 
 static void myo_initialize(Myo *myo) {
 	myohw_fw_version_t version;
-	char *name = NULL;
+	char name[25];
 
 	//unsigned short C;
 	//unsigned char emg_hz, emg_smooth, imu_hz;
@@ -851,7 +852,6 @@ static void myo_initialize(Myo *myo) {
 
 	myo_get_name((myobluez_myo_t) myo, name);
 	printf("device name: %s\n", name);
-	g_free(name);
 
 	//enable IMU data
 	myo_IMU_notify_enable((myobluez_myo_t) myo, true);
