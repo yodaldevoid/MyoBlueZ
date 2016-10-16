@@ -689,6 +689,24 @@ static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 	}
 }
 
+static GVariant* myo_read_value(GDBusProxy *proxy) {
+	GVariantBuilder build_opt;
+	GVariant *var;
+
+	if(proxy == NULL) {
+		debug("Proxy was NULL\n");
+		return NULL;
+	}
+
+	g_variant_builder_init(&build_opt, G_VARIANT_TYPE("a{sv}"));
+
+	var = g_dbus_proxy_call_sync(proxy, "ReadValue",
+			g_variant_new("(a{sv})", &build_opt),
+			G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+	ASSERT(error, "Failed to get value");
+	return var;
+}
+
 char* pose2str(myohw_pose_t pose) {
 	switch(pose) {
 		case myohw_pose_rest:
@@ -724,7 +742,6 @@ int myo_get_name(myobluez_myo_t bmyo, char *str) {
 }
 
 void myo_get_version(myobluez_myo_t bmyo, myohw_fw_version_t *ver) {
-	GVariantBuilder build_opt;
 	GVariant *ver_var;
 	GVariantIter *iter;
 	unsigned char *ver_char = (unsigned char*) ver;
@@ -736,20 +753,17 @@ void myo_get_version(myobluez_myo_t bmyo, myohw_fw_version_t *ver) {
 		return;
 	}
 
-	g_variant_builder_init(&build_opt, G_VARIANT_TYPE("a{sv}"));
-
-	ver_var = g_dbus_proxy_call_sync(myo->version_data, "ReadValue",
-			g_variant_new("(a{sv})", &build_opt),
-			G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-	ASSERT(error, "Failed to get version");
+	ver_var = myo_read_value(myo->version_data);
 	if(ver_var != NULL) {
 		g_variant_get(ver_var, "(ay)", &iter);
 
+		//TODO:check for overruns
 		while(g_variant_iter_loop(iter, "y", ver_char))  ver_char++;
 		g_variant_iter_free(iter);
 	} else {
 		debug("Failled to read version");
 	}
+	g_variant_unref(ver_var);
 }
 
 void myo_EMG_notify_enable(myobluez_myo_t bmyo, bool enable) {
