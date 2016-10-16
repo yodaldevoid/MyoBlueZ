@@ -70,6 +70,10 @@ typedef struct {
 	gulong arm_sig_id;
 	gulong emg_sig_id;
 
+	imu_cb_t on_imu;
+	arm_cb_t on_arm;
+	emg_cb_t on_emg;
+
 	GSource *source;
 
 	MyoStatus myo_status;
@@ -537,6 +541,9 @@ static void set_myo(const gchar *path) {
 	myo->myo_status = UNKNOWN;
 	myo->version.hardware_rev = 0xFFFF;
 	myo->info.reserved[0] = 0xFF;
+	myo->on_imu = NULL;
+	myo->on_arm = NULL;
+	myo->on_emg = NULL;
 
 	//check ServicesResolved
 	serv_res = g_dbus_proxy_get_cached_property(myo->proxy, "ServicesResolved");
@@ -565,55 +572,30 @@ static void object_added_cb(GDBusObjectManager *manager, GDBusObject *object, gp
 	} 
 }
 
-static void on_imu(short *quat, short *acc, short *gyro) {
-	printf(
-			"On_IMU:\n"
-			"Quat - X: %d | Y: %d | Z: %d | W: %d\n"
-			"Acc - X: %d | Y: %d | Z: %d\n"
-			"Gyro - X: %d | Y: %d | Z: %d\n"
-			"--------------------------------------\n",
-			quat[0], quat[1], quat[2], quat[3],
-			acc[0], acc[1], acc[2],
-			gyro[0], gyro[1], gyro[2]);
-}
-
 static void myo_imu_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key, *vals;
 	GVariant *value;
 	gsize elements;
 
-	short quat[4], acc[3], gyro[3];
+	Myo* myo;
+	myohw_imu_data_t data;
 
 	if(g_variant_n_children(changed) > 0) {
 		g_variant_get(changed, "a{sv}", &iter);
 		while(g_variant_iter_loop(iter, "{&sv}", &key, &value)) {
 			if(strcmp(key, "Value") == 0) {
 				vals = g_variant_get_fixed_array(value, &elements, sizeof(gchar));
-				memcpy(quat, vals, 8);
-				memcpy(acc, vals + 8, 6);
-				memcpy(gyro, vals + 14, 6);
-				on_imu(quat, acc, gyro);
+				memcpy(&data, vals, sizeof(myohw_imu_data_t));
+
+				myo = (Myo*) user_data;
+				if(myo != NULL && myo->on_imu != NULL) {
+					myo->on_imu(data);
+				}
 			}
 		}
 		g_variant_iter_free (iter);
 	}
-}
-
-static void on_arm(myohw_arm_t side, myohw_x_direction_t dir) {
-	printf(
-			"On_Arm:\n"
-			"Side: %s | XDirection: %s\n"
-			"--------------------------------------\n",
-			side2str(side), dir2str(dir));
-}
-
-static void on_pose(myohw_pose_t pose) {
-	printf(
-			"On_Pose:\n"
-			"Pose: %s\n"
-			"--------------------------------------\n",
-			pose2str(pose));
 }
 
 static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
@@ -622,6 +604,7 @@ static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 	const gchar *key, *vals;
 	GVariant *value;
 	gsize elements;
+	Myo* myo;
 
 	if(g_variant_n_children(changed) > 0) {
 		g_variant_get(changed, "a{sv}", &iter);
@@ -630,27 +613,9 @@ static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 				vals = g_variant_get_fixed_array(value, &elements, sizeof(gchar));
 				memcpy(&event, vals, sizeof(event));
 
-				switch(event.type) {
-					case myohw_classifier_event_arm_synced:
-						on_arm(event.arm, event.x_direction);
-						break;
-					case myohw_classifier_event_arm_unsynced:
-						debug("Unsynced");
-						break;
-					case myohw_classifier_event_pose:
-						on_pose(event.pose);
-						break;
-					case myohw_classifier_event_unlocked:
-						debug("Unlocked");
-						break;
-					case myohw_classifier_event_locked:
-						debug("Locked");
-						break;
-					case myohw_classifier_event_sync_failed:
-						debug("Sync failed");
-						break;
-					default:
-						debug("Unknown event type %d", event.type);
+				myo = (Myo*) user_data;
+				if(myo != NULL && myo->on_arm != NULL) {
+					myo->on_arm(event);
 				}
 			}
 		}
@@ -658,25 +623,12 @@ static void myo_arm_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 	}
 }
 
-static void on_emg(short *emg, unsigned char moving) {
-	printf(
-			"On_EMG:\n"
-			"EMG 1: %u | EMG 2: %u\n"
-			"EMG 3: %u | EMG 4: %u\n"
-			"EMG 5: %u | EMG 6: %u\n"
-			"EMG 7: %u | EMG 8: %u\n"
-			"Moving: %u\n"
-			"--------------------------------------\n",
-			emg[0], emg[1], emg[2], emg[3],
-			emg[4], emg[5], emg[6], emg[7],
-			moving);
-}
-
 static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpointer user_data) {
 	GVariantIter *iter;
 	const gchar *key, *vals;
 	GVariant *value;
 
+	Myo* myo;
 	short emg[8];
 	unsigned char moving;
 
@@ -690,11 +642,30 @@ static void myo_emg_cb(GDBusProxy *proxy, GVariant *changed, GStrv invalid, gpoi
 				//around or something
 				memcpy(emg, vals, 16);
 				moving = vals[16];
-				on_emg(emg, moving);
+
+				myo = (Myo*) user_data;
+				if(myo != NULL && myo->on_emg != NULL) {
+					myo->on_emg(emg, moving);
+				}
 			}
 		}
 		g_variant_iter_free (iter);
 	}
+}
+
+void myo_imu_cb_register(myobluez_myo_t bmyo, imu_cb_t callback) {
+	Myo* myo = (Myo*) bmyo;
+	myo->on_imu = callback;
+}
+
+void myo_arm_cb_register(myobluez_myo_t bmyo, arm_cb_t callback) {
+	Myo* myo = (Myo*) bmyo;
+	myo->on_arm = callback;
+}
+
+void myo_emg_cb_register(myobluez_myo_t bmyo, emg_cb_t callback) {
+	Myo* myo = (Myo*) bmyo;
+	myo->on_emg = callback;
 }
 
 static GVariant* myo_read_value(GDBusProxy *proxy) {
@@ -800,7 +771,7 @@ void myo_EMG_notify_enable(myobluez_myo_t bmyo, bool enable) {
 		ASSERT(error, "EMG notify enable failed");
 		if(myo->emg_sig_id == 0) {
 			myo->emg_sig_id = g_signal_connect(myo->emg_data,
-					"g-properties-changed", G_CALLBACK(myo_emg_cb), NULL);
+					"g-properties-changed", G_CALLBACK(myo_emg_cb), myo);
 		}
 	} else {
 		g_dbus_proxy_call_sync(myo->emg_data, "StopNotify", NULL,
@@ -825,7 +796,7 @@ void myo_IMU_notify_enable(myobluez_myo_t bmyo, bool enable) {
 		ASSERT(error, "IMU notify enable failed");
 		if(myo->imu_sig_id == 0) {
 			myo->imu_sig_id = g_signal_connect(myo->imu_data, "g-properties-changed",
-											G_CALLBACK(myo_imu_cb), NULL);
+											G_CALLBACK(myo_imu_cb), myo);
 		}
 	} else {
 		g_dbus_proxy_call_sync(myo->imu_data, "StopNotify", NULL,
@@ -850,7 +821,7 @@ void myo_arm_indicate_enable(myobluez_myo_t bmyo, bool enable) {
 		ASSERT(error, "Arm notify enable failed");
 		if(myo->arm_sig_id == 0) {
 			myo->arm_sig_id = g_signal_connect(myo->arm_data, "g-properties-changed",
-											G_CALLBACK(myo_arm_cb), NULL);
+											G_CALLBACK(myo_arm_cb), myo);
 		}
 	} else {
 		g_dbus_proxy_call_sync(myo->arm_data, "StopNotify", NULL,

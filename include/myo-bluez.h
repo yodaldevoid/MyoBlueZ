@@ -25,6 +25,9 @@
 #define MYOBLUEZ_OK 0
 
 typedef void* myobluez_myo_t;
+typedef void (*imu_cb_t)(myohw_imu_data_t);
+typedef void (*arm_cb_t)(myohw_classifier_event_t);
+typedef void (*emg_cb_t)(int16_t*, uint8_t);
 
 typedef enum {
 	DISCONNECTED,
@@ -34,10 +37,13 @@ typedef enum {
 
 int myo_get_name(myobluez_myo_t myo, char *str);
 int myo_get_version(myobluez_myo_t myo, myohw_fw_version_t *ver);
-int myo_get_info(myobluez_myo_t bmyo, myohw_fw_info_t *info);
+int myo_get_info(myobluez_myo_t myo, myohw_fw_info_t *info);
 void myo_EMG_notify_enable(myobluez_myo_t myo, bool enable);
 void myo_IMU_notify_enable(myobluez_myo_t myo, bool enable);
 void myo_arm_indicate_enable(myobluez_myo_t myo, bool enable);
+void myo_imu_cb_register(myobluez_myo_t myo, imu_cb_t callback);
+void myo_arm_cb_register(myobluez_myo_t myo, arm_cb_t callback);
+void myo_emg_cb_register(myobluez_myo_t myo, emg_cb_t callback);
 void myo_update_enable(
 		myobluez_myo_t myo,
 		myohw_emg_mode_t emg,
