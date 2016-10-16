@@ -45,7 +45,7 @@ void myo_update_enable(
 		myohw_classifier_mode_t arm);
 char* pose2str(myohw_pose_t pose);
 
-int myobluez_init();
+int myobluez_init(int (*myo_init)(myobluez_myo_t));
 void myobluez_deinit();
 
 #endif

@@ -102,6 +102,7 @@ typedef struct {
 
 static gboolean myo_init_prepare(GSource *source, gint *timeout_);
 static gboolean myo_init_dispatch(GSource *source, GSourceFunc callback, gpointer user_data);
+static int (*myo_initialize)(myobluez_myo_t myo);
 
 GSourceFuncs myo_init_funcs = {
 	myo_init_prepare,
@@ -925,36 +926,6 @@ int myo_get_info(myobluez_myo_t bmyo, myohw_fw_info_t *info) {
 	return MYOBLUEZ_OK;
 }
 
-static void myo_initialize(Myo *myo) {
-	myohw_fw_version_t version;
-	char name[25];
-
-	printf("Initializing...\n");
-
-	//read firmware version
-	myo_get_version((myobluez_myo_t) myo, &version);
-	printf("firmware version: %d.%d.%d.%d\n",
-			version.major, version.minor, version.patch, version.hardware_rev);
-
-	myo_get_info((myobluez_myo_t) myo, &myo->info);
-
-	myo_get_name((myobluez_myo_t) myo, name);
-	printf("device name: %s\n", name);
-
-	//enable IMU data
-	myo_IMU_notify_enable((myobluez_myo_t) myo, true);
-	//enable on/off arm notifications
-	myo_arm_indicate_enable((myobluez_myo_t) myo, true);
-
-	myo_update_enable((myobluez_myo_t) myo,
-			myohw_emg_mode_none,
-			myohw_imu_mode_send_events,
-			myohw_classifier_mode_enabled);
-
-	myo->myo_status = INITIALIZED;
-	printf("Initialized!\n");
-}
-
 static gboolean myo_init_prepare(GSource *source, gint *timeout_) {
 	int i, j;
 	MyoInitSource *myo_source = (MyoInitSource*) source;
@@ -984,7 +955,9 @@ static gboolean myo_init_prepare(GSource *source, gint *timeout_) {
 static gboolean myo_init_dispatch(GSource *source, GSourceFunc callback, gpointer user_data) {
 	MyoInitSource *myo_source = (MyoInitSource*) source;
 
-	myo_initialize(myo_source->myo);
+	if(myo_initialize((myobluez_myo_t) myo_source->myo) == MYOBLUEZ_OK) {
+		myo_source->myo->myo_status = INITIALIZED;
+	}
 
 	return G_SOURCE_CONTINUE;
 }
@@ -1110,7 +1083,7 @@ void myobluez_deinit() {
 	}
 }
 
-int myobluez_init() {
+int myobluez_init(int (*myo_init)(myobluez_myo_t)) {
 	int i;
 
 	for(i = 0; i < MAX_MYOS; i++) {
@@ -1131,6 +1104,8 @@ int myobluez_init() {
 		fprintf(stderr, "Error: Is Bluez running?\n");
 		return 1;
 	}
+
+	myo_initialize = myo_init;
 
 	cb_id = g_signal_connect(bluez_manager, "object-added",
 			G_CALLBACK(object_added_cb), NULL);
