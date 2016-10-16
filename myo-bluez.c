@@ -731,6 +731,11 @@ int myo_get_name(myobluez_myo_t bmyo, char *str) {
 	gsize length;
 	Myo *myo = (Myo*) bmyo;
 
+	if(myo->proxy == NULL) {
+		debug("Myo proxy not set\n");
+		return -1;
+	}
+
 	name = g_dbus_proxy_get_cached_property(myo->proxy, "Alias");
 	if(name == NULL) {
 		return -1;
@@ -749,7 +754,7 @@ void myo_get_version(myobluez_myo_t bmyo, myohw_fw_version_t *ver) {
 	Myo *myo = (Myo*) bmyo;
 
 	if(myo->version_data == NULL) {
-		//error
+		debug("Version data proxy not set\n");
 		return;
 	}
 
