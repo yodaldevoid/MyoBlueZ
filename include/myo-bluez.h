@@ -32,13 +32,13 @@ typedef enum {
 	CONNECTED
 } ConnectionStatus;
 
-int myo_get_name(myobluez_myo_t *myo, char *str);
-void myo_get_version(myobluez_myo_t *myo, myohw_fw_version_t *ver);
-void myo_EMG_notify_enable(myobluez_myo_t *myo, bool enable);
-void myo_IMU_notify_enable(myobluez_myo_t *myo, bool enable);
-void myo_arm_indicate_enable(myobluez_myo_t *myo, bool enable);
+int myo_get_name(myobluez_myo_t myo, char *str);
+void myo_get_version(myobluez_myo_t myo, myohw_fw_version_t *ver);
+void myo_EMG_notify_enable(myobluez_myo_t myo, bool enable);
+void myo_IMU_notify_enable(myobluez_myo_t myo, bool enable);
+void myo_arm_indicate_enable(myobluez_myo_t myo, bool enable);
 void myo_update_enable(
-		myobluez_myo_t *myo,
+		myobluez_myo_t myo,
 		myohw_emg_mode_t emg,
 		myohw_imu_mode_t imu,
 		myohw_classifier_mode_t arm);

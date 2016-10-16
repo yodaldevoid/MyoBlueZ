@@ -708,7 +708,7 @@ char* pose2str(myohw_pose_t pose) {
 	}
 }
 
-int myo_get_name(myobluez_myo_t *bmyo, char *str) {
+int myo_get_name(myobluez_myo_t bmyo, char *str) {
 	GVariant *name;
 	gsize length;
 	Myo *myo = (Myo*) bmyo;
@@ -723,7 +723,7 @@ int myo_get_name(myobluez_myo_t *bmyo, char *str) {
 	return (int) length;
 }
 
-void myo_get_version(myobluez_myo_t *bmyo, myohw_fw_version_t *ver) {
+void myo_get_version(myobluez_myo_t bmyo, myohw_fw_version_t *ver) {
 	GVariantBuilder build_opt;
 	GVariant *ver_var;
 	GVariantIter *iter;
@@ -752,7 +752,7 @@ void myo_get_version(myobluez_myo_t *bmyo, myohw_fw_version_t *ver) {
 	}
 }
 
-void myo_EMG_notify_enable(myobluez_myo_t *bmyo, bool enable) {
+void myo_EMG_notify_enable(myobluez_myo_t bmyo, bool enable) {
 	Myo *myo = (Myo*) bmyo;
 
 	if(myo->emg_data == NULL) {
@@ -777,7 +777,7 @@ void myo_EMG_notify_enable(myobluez_myo_t *bmyo, bool enable) {
 	}
 }
 
-void myo_IMU_notify_enable(myobluez_myo_t *bmyo, bool enable) {
+void myo_IMU_notify_enable(myobluez_myo_t bmyo, bool enable) {
 	Myo *myo = (Myo*) bmyo;
 
 	if(myo->imu_data == NULL) {
@@ -802,7 +802,7 @@ void myo_IMU_notify_enable(myobluez_myo_t *bmyo, bool enable) {
 	}
 }
 
-void myo_arm_indicate_enable(myobluez_myo_t *bmyo, bool enable) {
+void myo_arm_indicate_enable(myobluez_myo_t bmyo, bool enable) {
 	Myo *myo = (Myo*) bmyo;
 
 	if(myo->arm_data == NULL) {
@@ -828,7 +828,7 @@ void myo_arm_indicate_enable(myobluez_myo_t *bmyo, bool enable) {
 }
 
 void myo_update_enable(
-		myobluez_myo_t *bmyo,
+		myobluez_myo_t bmyo,
 		myohw_emg_mode_t emg,
 		myohw_imu_mode_t imu,
 		myohw_classifier_mode_t arm)
