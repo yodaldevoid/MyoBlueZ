@@ -33,7 +33,8 @@ typedef enum {
 } ConnectionStatus;
 
 int myo_get_name(myobluez_myo_t myo, char *str);
-void myo_get_version(myobluez_myo_t myo, myohw_fw_version_t *ver);
+int myo_get_version(myobluez_myo_t myo, myohw_fw_version_t *ver);
+int myo_get_info(myobluez_myo_t bmyo, myohw_fw_info_t *info);
 void myo_EMG_notify_enable(myobluez_myo_t myo, bool enable);
 void myo_IMU_notify_enable(myobluez_myo_t myo, bool enable);
 void myo_arm_indicate_enable(myobluez_myo_t myo, bool enable);

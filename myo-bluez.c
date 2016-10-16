@@ -63,6 +63,7 @@ typedef struct {
 
 	GattService services[NUM_SERVICES];
 
+	myohw_fw_version_t version;
 	myohw_fw_info_t info;
 
 	gulong imu_sig_id;
@@ -533,6 +534,8 @@ static void set_myo(const gchar *path) {
 
 	myo->conn_status = CONNECTING;
 	myo->myo_status = UNKNOWN;
+	myo->version.hardware_rev = 0xFFFF;
+	myo->info.reserved[0] = 0xFF;
 
 	//check ServicesResolved
 	serv_res = g_dbus_proxy_get_cached_property(myo->proxy, "ServicesResolved");
@@ -750,29 +753,37 @@ int myo_get_name(myobluez_myo_t bmyo, char *str) {
 	return (int) length;
 }
 
-void myo_get_version(myobluez_myo_t bmyo, myohw_fw_version_t *ver) {
+int myo_get_version(myobluez_myo_t bmyo, myohw_fw_version_t *ver) {
 	GVariant *ver_var;
 	GVariantIter *iter;
-	unsigned char *ver_char = (unsigned char*) ver;
+	unsigned char *ver_char;
 
 	Myo *myo = (Myo*) bmyo;
 
 	if(myo->version_data == NULL) {
 		debug("Version data proxy not set\n");
-		return;
+		return MYOBLUEZ_ERROR;
 	}
 
-	ver_var = myo_read_value(myo->version_data);
-	if(ver_var != NULL) {
-		g_variant_get(ver_var, "(ay)", &iter);
+	if(myo->version.hardware_rev == 0xFFFF) {
+		ver_var = myo_read_value(myo->version_data);
+		if(ver_var != NULL) {
+			g_variant_get(ver_var, "(ay)", &iter);
 
-		//TODO:check for overruns
-		while(g_variant_iter_loop(iter, "y", ver_char))  ver_char++;
-		g_variant_iter_free(iter);
-	} else {
-		debug("Failled to read version");
+			ver_char = (unsigned char*) &myo->version;
+
+			//TODO:check for overruns
+			while(g_variant_iter_loop(iter, "y", ver_char))  ver_char++;
+			g_variant_iter_free(iter);
+		} else {
+			debug("Failled to read version");
+			return MYOBLUEZ_ERROR;
+		}
+		g_variant_unref(ver_var);
 	}
-	g_variant_unref(ver_var);
+
+	memcpy(ver, &myo->version, sizeof(myohw_fw_version_t));
+	return MYOBLUEZ_OK;
 }
 
 void myo_EMG_notify_enable(myobluez_myo_t bmyo, bool enable) {
@@ -881,7 +892,7 @@ void myo_update_enable(
 	}
 }
 
-void myo_get_info(myobluez_myo_t bmyo, myohw_fw_info_t *info) {
+int myo_get_info(myobluez_myo_t bmyo, myohw_fw_info_t *info) {
 	GVariant *info_var;
 	GVariantIter *iter;
 	unsigned char *info_char = (unsigned char*) info;
@@ -890,20 +901,28 @@ void myo_get_info(myobluez_myo_t bmyo, myohw_fw_info_t *info) {
 
 	if(myo->firmware_info == NULL) {
 		debug("Firmware info proxy not set\n");
-		return;
+		return MYOBLUEZ_ERROR;
 	}
 
-	info_var = myo_read_value(myo->firmware_info);
-	if(info_var != NULL) {
-		g_variant_get(info_var, "(ay)", &iter);
+	if(myo->info.reserved[0] == 0xFF) {
+		info_var = myo_read_value(myo->firmware_info);
+		if(info_var != NULL) {
+			info_char = (unsigned char*) &myo->info;
 
-		//TODO: check for overruns
-		while(g_variant_iter_loop(iter, "y", info_char))  info_char++;
-		g_variant_iter_free(iter);
-	} else {
-		debug("Failled to read firmware info");
+			g_variant_get(info_var, "(ay)", &iter);
+
+			//TODO: check for overruns
+			while(g_variant_iter_loop(iter, "y", info_char))  info_char++;
+			g_variant_iter_free(iter);
+		} else {
+			debug("Failled to read firmware info");
+			return MYOBLUEZ_ERROR;
+		}
+		g_variant_unref(info_var);
 	}
-	g_variant_unref(info_var);
+
+	memcpy(info, &myo->info, sizeof(myohw_fw_info_t));
+	return MYOBLUEZ_OK;
 }
 
 static void myo_initialize(Myo *myo) {
