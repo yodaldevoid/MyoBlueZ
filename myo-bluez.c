@@ -63,6 +63,8 @@ typedef struct {
 
 	GattService services[NUM_SERVICES];
 
+	myohw_fw_info_t info;
+
 	gulong imu_sig_id;
 	gulong arm_sig_id;
 	gulong emg_sig_id;
@@ -80,9 +82,11 @@ typedef struct {
 #define arm_service services[3]
 #define emg_service services[4]
 
+#define firmware_info myo_control_service.char_proxies[0]
 #define version_data myo_control_service.char_proxies[1]
 #define cmd_input myo_control_service.char_proxies[2]
 #define imu_data imu_service.char_proxies[0]
+#define imu_events imu_service.char_proxies[1]
 #define arm_data arm_service.char_proxies[0]
 #define emg_data emg_service.char_proxies[0]
 
@@ -877,12 +881,34 @@ void myo_update_enable(
 	}
 }
 
+void myo_get_info(myobluez_myo_t bmyo, myohw_fw_info_t *info) {
+	GVariant *info_var;
+	GVariantIter *iter;
+	unsigned char *info_char = (unsigned char*) info;
+
+	Myo *myo = (Myo*) bmyo;
+
+	if(myo->firmware_info == NULL) {
+		debug("Firmware info proxy not set\n");
+		return;
+	}
+
+	info_var = myo_read_value(myo->firmware_info);
+	if(info_var != NULL) {
+		g_variant_get(info_var, "(ay)", &iter);
+
+		//TODO: check for overruns
+		while(g_variant_iter_loop(iter, "y", info_char))  info_char++;
+		g_variant_iter_free(iter);
+	} else {
+		debug("Failled to read firmware info");
+	}
+	g_variant_unref(info_var);
+}
+
 static void myo_initialize(Myo *myo) {
 	myohw_fw_version_t version;
 	char name[25];
-
-	//unsigned short C;
-	//unsigned char emg_hz, emg_smooth, imu_hz;
 
 	printf("Initializing...\n");
 
@@ -890,6 +916,8 @@ static void myo_initialize(Myo *myo) {
 	myo_get_version((myobluez_myo_t) myo, &version);
 	printf("firmware version: %d.%d.%d.%d\n",
 			version.major, version.minor, version.patch, version.hardware_rev);
+
+	myo_get_info((myobluez_myo_t) myo, &myo->info);
 
 	myo_get_name((myobluez_myo_t) myo, name);
 	printf("device name: %s\n", name);
